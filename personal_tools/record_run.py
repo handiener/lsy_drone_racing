@@ -32,15 +32,19 @@ import numpy as np  # noqa: E402
 from personal_tools._run_io import (  # noqa: E402
     SCHEMA_VERSION,
     TimelineVideoWriter,
+    combine_views,
     snapshot_model,
     validate_trajectory,
+    video_times,
 )
+from personal_tools.replay_run import replay  # noqa: E402
 from scripts import sim as official_sim  # noqa: E402
 
 if TYPE_CHECKING:
     from types import ModuleType
 
 logger = logging.getLogger(__name__)
+PREVIEW_VIEWS = ("world", "world_120", "world_240", "top", "fpv", "fpv_rear")
 
 
 def _input_path(value: str, directory: str) -> Path:
@@ -94,6 +98,7 @@ class RunRecorder:
         self.n_runs = n_runs
         self.episode_index = 0
         self.results: list[dict[str, Any]] = []
+        self.render_times: list[float] = []
         self.fps, self.width, self.height = fps, width, height
         self.samples: dict[str, list] = defaultdict(list)
         self.metadata: dict[str, Any] = {
@@ -146,15 +151,17 @@ class RunRecorder:
             self.output_dir = self.batch_dir / f"run_{self.episode_index:04d}"
             self.output_dir.mkdir(exist_ok=False)
         self.samples = defaultdict(list)
+        self.render_times = []
         self.finalizing = False
         self.last_frame = self.last_frame_time = None
         self.flight_time = None
         self.finished = self.completed = False
         self.gates_passed = 0
         self.metadata.update(config=self.config.to_dict(), episode_index=self.episode_index)
+        self.metadata["preview_cameras"] = list(PREVIEW_VIEWS)
         self.model_mjb = snapshot_model(self.env.sim.mj_model)
         self.video = TimelineVideoWriter(
-            self.output_dir / "preview.mp4", self.fps, self.width, self.height
+            self.output_dir / "views/world.mp4", self.fps, self.width, self.height
         )
 
     def capture(self, terminated: bool = False, truncated: bool = False):
@@ -213,6 +220,17 @@ class RunRecorder:
         # Sim.render's decorator reads sim.data; the environment owns newer functional state.
         self.env.sim.data = self.env.data.sim_data
         self.env.render()
+        viewer = getattr(self.env.sim.viewer, "viewer", None)
+        camera = getattr(viewer, "cam", None)
+        if camera is not None:
+            # Save the actual free-camera framing, including defaults omitted by the config.
+            # The other world views orbit the same lookat with the same distance/elevation.
+            self.metadata["world_cam_config"] = {
+                "distance": float(camera.distance),
+                "azimuth": float(camera.azimuth),
+                "elevation": float(camera.elevation),
+                "lookat": np.asarray(camera.lookat).tolist(),
+            }
 
     def finish_video(self):
         """Include the terminal state, which official simulate() skips rendering."""
@@ -289,7 +307,9 @@ class RunRecorder:
                     # prevents requires_mujoco_sync from restoring the old initial drone pose.
                     sim.data = self.env.data.sim_data
                     arguments = render_signature.bind(*render_args, **render_kwargs).arguments
-                    arguments.update(mode="rgb_array", width=self.width, height=self.height)
+                    arguments.update(
+                        mode="rgb_array", camera=-1, width=self.width, height=self.height
+                    )
                     frame = original_render(**arguments)
                     timestamp = float(np.asarray(self.env.data.sim_data.core.steps).flat[0])
                     timestamp /= self.env.data.sim_data.core.freq
@@ -297,6 +317,7 @@ class RunRecorder:
                     self.last_frame_time = timestamp
                     if not self.finalizing:
                         self.video.push(timestamp, self.last_frame)
+                        self.render_times.append(timestamp)
                     return frame
 
                 hooks.enter_context(patch.object(sim, "render", render))
@@ -331,6 +352,7 @@ class RunRecorder:
         if self.samples["time"]:
             arrays = {name: np.asarray(values) for name, values in self.samples.items()}
             arrays.update(self.track_ids, model_mjb=self.model_mjb)
+            arrays["preview_render_time"] = np.asarray(self.render_times, dtype=np.float64)
             validate_trajectory(arrays, self.metadata)
             arrays["metadata_json"] = np.asarray(json.dumps(self.metadata))
             np.savez_compressed(self.output_dir / "trajectory.npz", **arrays)
@@ -349,7 +371,14 @@ class RunRecorder:
             "state_samples": len(self.samples["time"]),
             "status": "complete" if self.completed and error is None else "error",
             "error": f"{type(error).__name__}: {error}" if error else None,
-            "video": {"fps": self.fps, "width": self.width, "height": self.height},
+            "video": {
+                "fps": self.fps,
+                "width": 3 * self.width,
+                "height": 2 * self.height,
+                "view_width": self.width,
+                "view_height": self.height,
+                "layout": [list(PREVIEW_VIEWS[:3]), list(PREVIEW_VIEWS[3:])],
+            },
             "versions": {
                 key: self.metadata[key]
                 for key in ("mujoco_version", "crazyflow_version", "repo_commit")
@@ -383,6 +412,50 @@ class RunRecorder:
             }
             (self.batch_dir / "summary.json").write_text(
                 json.dumps(summary, indent=2) + "\n", encoding="utf-8"
+            )
+
+    def render_views(self):
+        """Build synchronized additional views after the official loop and viewer have closed."""
+        if not self.closed:
+            raise RuntimeError("Additional views require the official environment to be closed")
+        for entry in self.results:
+            directory = self.batch_dir / entry["directory"]
+            path = directory / "trajectory.npz"
+            if not path.is_file():
+                continue
+            with np.load(path, allow_pickle=False) as archive:
+                rendered = archive["preview_render_time"]
+                end_time = float(archive["time"][-1])
+            ticks = video_times(end_time, self.fps)
+            # Match the world preview's held source frame, even if official render cadence is
+            # lower than env frequency. All six panels then show the same recorded state.
+            indices = np.searchsorted(rendered, ticks + 1e-9, side="right") - 1
+            frame_times = rendered[np.maximum(indices, 0)].copy()
+            frame_times[-1] = end_time
+            for name, camera, offset in (
+                ("world_120", "world", 120.0),
+                ("world_240", "world", 240.0),
+                ("top", "top", 0.0),
+                ("fpv", "fpv", 0.0),
+                ("fpv_rear", "fpv_rear", 0.0),
+            ):
+                logger.info("Rendering %s view for %s", name, directory)
+                replay(
+                    path,
+                    camera=camera,
+                    fps=self.fps,
+                    width=self.width,
+                    height=self.height,
+                    output=directory / "views" / f"{name}.mp4",
+                    azimuth_offset=offset,
+                    frame_times=frame_times,
+                )
+            combine_views(
+                [directory / "views" / f"{name}.mp4" for name in PREVIEW_VIEWS],
+                directory / "preview.mp4",
+                fps=self.fps,
+                width=self.width,
+                height=self.height,
             )
 
 
@@ -419,6 +492,7 @@ def record_run(
             logger.exception("Could not save partial run to %s", output_dir)
         raise
     recorder.save()
+    recorder.render_views()
     print(f"Recorded {n_runs} run(s): {output_dir}")
     return output_dir
 

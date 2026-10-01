@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
     from types import TracebackType
 
     import mujoco
@@ -225,6 +225,59 @@ def video_times(end_time: float, fps: float, start_time: float = 0.0) -> np.ndar
     times = start_time + np.arange(count, dtype=np.float64) / fps
     times[-1] = end_time
     return times
+
+
+def combine_views(
+    paths: Sequence[str | Path], output: str | Path, *, fps: float, width: int, height: int
+) -> Path:
+    """Place six equal-sized, synchronized videos in two rows of three."""
+    _video_parameters(fps, width, height)
+    if len(paths) != 6:
+        raise ValueError("A combined preview needs exactly six view videos")
+    destination = Path(output)
+    if destination.exists():
+        raise FileExistsError(f"Video output already exists: {destination}")
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        raise RuntimeError("ffmpeg was not found on PATH")
+    command = [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-n"]
+    for path in paths:
+        source = Path(path)
+        if not source.is_file():
+            raise FileNotFoundError(source)
+        command.extend(["-i", str(source)])
+    command.extend(
+        [
+            "-filter_complex_threads",
+            "1",
+            "-filter_complex",
+            "[0:v][1:v][2:v]hstack=inputs=3:shortest=1[upper];"
+            "[3:v][4:v][5:v]hstack=inputs=3:shortest=1[lower];"
+            "[upper][lower]vstack=inputs=2:shortest=1[video]",
+            "-map",
+            "[video]",
+            "-an",
+            "-r",
+            str(fps),
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-movflags",
+            "+faststart",
+            "-f",
+            "mp4",
+            str(destination),
+        ]
+    )
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryFile() as diagnostics:
+        result = subprocess.run(command, stdout=subprocess.DEVNULL, stderr=diagnostics, check=False)
+        if result.returncode:
+            diagnostics.seek(0)
+            message = diagnostics.read().decode("utf-8", errors="replace").strip()
+            raise RuntimeError(f"Could not combine views: {message}")
+    return destination
 
 
 class VideoWriter:

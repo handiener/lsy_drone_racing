@@ -92,15 +92,34 @@ def _camera(
     azimuth: float | None,
     elevation: float | None,
     lookat: list[float] | tuple[float, float, float] | None,
+    azimuth_offset: float = 0.0,
 ) -> mujoco.MjvCamera | str:
     import mujoco
 
-    if preset == "fpv":
-        if any(value is not None for value in (distance, azimuth, elevation, lookat)):
-            raise ValueError("Custom free-camera parameters cannot be combined with --camera fpv")
+    if not np.isfinite(azimuth_offset):
+        raise ValueError("azimuth_offset must be finite")
+    if preset in ("fpv", "fpv_rear"):
+        if (
+            any(value is not None for value in (distance, azimuth, elevation, lookat))
+            or azimuth_offset
+        ):
+            raise ValueError(
+                f"Custom free-camera parameters cannot be combined with --camera {preset}"
+            )
         name = "fpv_cam:0"
-        if mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, name) < 0:
+        camera_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, name)
+        if camera_id < 0:
             raise ValueError(f"The recorded model has no FPV camera named {name!r}")
+        if preset == "fpv_rear":
+            # Rotate the existing mount around the drone's local up axis. The loaded replay
+            # model is private to this video; the recorded MJB and forward view stay intact.
+            if model.cam_mode[camera_id] != mujoco.mjtCamLight.mjCAMLIGHT_FIXED:
+                raise ValueError("Rear FPV requires a camera fixed to the drone body")
+            original = model.cam_quat[camera_id].copy()
+            rear = np.empty(4)
+            mujoco.mju_mulQuat(rear, np.array([0.0, 0.0, 0.0, 1.0]), original)
+            model.cam_quat[camera_id] = rear
+            model.cam_pos[camera_id, :2] *= -1
         return name
 
     camera = mujoco.MjvCamera()
@@ -121,7 +140,7 @@ def _camera(
     }[preset]
     if preset == "world":
         # Keep the recording's free-camera framing when the user has not selected a new preset.
-        config = metadata.get("cam_config") or {}
+        config = metadata.get("world_cam_config") or metadata.get("cam_config") or {}
         if isinstance(config, list):
             config = config[0] if config else {}
         for key in ("distance", "azimuth", "elevation", "lookat"):
@@ -137,6 +156,7 @@ def _camera(
                     f"{key} must be finite" + (" and positive" if key == "distance" else "")
                 )
             setattr(camera, key, value)
+    camera.azimuth = (camera.azimuth + azimuth_offset) % 360.0
     if lookat is not None:
         if len(lookat) != 3 or not np.isfinite(lookat).all():
             raise ValueError("lookat must contain three finite coordinates")
@@ -156,11 +176,13 @@ def replay(
     azimuth: float | None = None,
     elevation: float | None = None,
     lookat: list[float] | tuple[float, float, float] | None = None,
+    azimuth_offset: float = 0.0,
+    frame_times: np.ndarray | None = None,
 ) -> Path:
     """Write a camera-specific video from saved poses, without starting a simulation."""
     import mujoco
 
-    if camera not in ("world", "top", "side", "fpv"):
+    if camera not in ("world", "top", "side", "fpv", "fpv_rear"):
         raise ValueError(f"Unknown camera preset: {camera}")
     path = Path(trajectory_path)
     destination = Path(output) if output is not None else path.parent / f"replay_{camera}.mp4"
@@ -184,10 +206,23 @@ def replay(
     model.vis.global_.offwidth = width
     model.vis.global_.offheight = height
     selected_camera = _camera(
-        model, trajectory, metadata, camera, distance, azimuth, elevation, lookat
+        model, trajectory, metadata, camera, distance, azimuth, elevation, lookat, azimuth_offset
     )
     data = mujoco.MjData(model)
     times = video_times(float(trajectory["time"][-1]), fps)
+    if frame_times is not None:
+        # Recorder previews supply the exact state timestamp used by each world-view frame.
+        # Ordinary replay keeps its existing interpolated display cadence.
+        frame_times = np.asarray(frame_times, dtype=np.float64)
+        if (
+            frame_times.shape != times.shape
+            or not np.isfinite(frame_times).all()
+            or np.any(np.diff(frame_times) < 0)
+            or frame_times[0] < 0
+            or frame_times[-1] > trajectory["time"][-1]
+        ):
+            raise ValueError("frame_times must be ordered trajectory times, one per video frame")
+        times = frame_times
     with VideoWriter(destination, fps, width, height) as writer:
         with mujoco.Renderer(model, height=height, width=width) as renderer:
             for time in times:
@@ -201,7 +236,9 @@ def main(argv: list[str] | None = None) -> None:
     """Parse the replay command line and report actionable errors without a traceback."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("trajectory", type=Path, help="Recorded trajectory.npz archive")
-    parser.add_argument("--camera", choices=("world", "top", "side", "fpv"), default="world")
+    parser.add_argument(
+        "--camera", choices=("world", "top", "side", "fpv", "fpv_rear"), default="world"
+    )
     parser.add_argument("--fps", type=float, default=60)
     parser.add_argument("--width", type=int, default=960)
     parser.add_argument("--height", type=int, default=540)
@@ -210,6 +247,12 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument("--distance", type=float)
     parser.add_argument("--azimuth", type=float, help="Free-camera azimuth in degrees")
+    parser.add_argument(
+        "--azimuth-offset",
+        type=float,
+        default=0.0,
+        help="Rotate the free camera by this many degrees",
+    )
     parser.add_argument("--elevation", type=float, help="Free-camera elevation in degrees")
     parser.add_argument("--lookat", nargs=3, type=float, metavar=("X", "Y", "Z"))
     arguments = parser.parse_args(argv)
@@ -225,6 +268,7 @@ def main(argv: list[str] | None = None) -> None:
             azimuth=arguments.azimuth,
             elevation=arguments.elevation,
             lookat=arguments.lookat,
+            azimuth_offset=arguments.azimuth_offset,
         )
     except (ValueError, RuntimeError, OSError) as exc:
         parser.exit(1, f"Replay failed: {exc}\n")

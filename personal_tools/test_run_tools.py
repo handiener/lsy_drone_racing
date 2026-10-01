@@ -6,6 +6,8 @@ Run with the project's Python: ``python -m unittest personal_tools.test_run_tool
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 import tempfile
 import unittest
 from contextlib import ExitStack
@@ -32,7 +34,7 @@ def small_model() -> mujoco.MjModel:
             <body name="drone" pos="0 0 0.7">
               <freejoint/>
               <geom type="sphere" size="0.03" mass="0.03"/>
-              <camera name="fpv_cam:0" pos="0.05 0 0"/>
+              <camera name="fpv_cam:0" pos="0.05 0 0" euler="0 -90 -90"/>
             </body>
             <body name="drone_mocap" mocap="true" pos="0 0 0.7"/>
             <body name="gate:0" mocap="true" pos="0.5 0 0.7">
@@ -195,6 +197,143 @@ class TrajectoryAndReplayTests(unittest.TestCase):
         np.testing.assert_array_equal(arrays["mocap_quat"], original)
         self.assertEqual(data.time, 0.04)
 
+    def test_world_cameras_orbit_the_recorded_framing_at_equal_angles(self) -> None:
+        """World cameras share their framing and rotate around the actual recorded azimuth."""
+        arrays, metadata = sample_trajectory(self.model)
+        metadata["cam_config"] = {
+            "lookat": [0.3, -0.7, 0.8],
+            "distance": 5.5,
+            "azimuth": 310,
+            "elevation": -24,
+        }
+        cameras = [
+            replay_run._camera(
+                self.model, arrays, metadata, "world", None, None, None, None, azimuth_offset=offset
+            )
+            for offset in (0, 120, 240)
+        ]
+        np.testing.assert_allclose([camera.azimuth for camera in cameras], [310, 70, 190])
+        for camera in cameras:
+            np.testing.assert_allclose(camera.lookat, [0.3, -0.7, 0.8])
+            self.assertEqual(camera.distance, 5.5)
+            self.assertEqual(camera.elevation, -24)
+        np.testing.assert_allclose(
+            np.mod(np.diff([camera.azimuth for camera in cameras] + [cameras[0].azimuth]), 360),
+            [120, 120, 120],
+        )
+        custom = replay_run._camera(
+            self.model, arrays, metadata, "world", None, 45, None, None, azimuth_offset=120
+        )
+        self.assertEqual(custom.azimuth, 165)
+
+        metadata["world_cam_config"] = dict(metadata["cam_config"], azimuth=280)
+        actual = replay_run._camera(
+            self.model, arrays, metadata, "world", None, None, None, None, azimuth_offset=120
+        )
+        self.assertEqual(actual.azimuth, 40)
+
+    def test_rear_fpv_rotates_the_saved_camera_mount_without_mutating_snapshot(self) -> None:
+        """Rear FPV faces backward while keeping the onboard camera's height and up axis."""
+        front_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_CAMERA, "fpv_cam:0")
+        self.model.cam_pos[front_id] = [0.05, 0.02, 0.03]
+        arrays, metadata = sample_trajectory(self.model)
+        snapshot = arrays["model_mjb"].copy()
+        replay_model = _run_io.load_model(snapshot, mujoco.__version__)
+        rear = replay_run._camera(
+            replay_model, arrays, metadata, "fpv_rear", None, None, None, None
+        )
+        rear_id = mujoco.mj_name2id(replay_model, mujoco.mjtObj.mjOBJ_CAMERA, rear)
+        self.assertEqual(replay_model.cam_bodyid[rear_id], self.model.cam_bodyid[front_id])
+        np.testing.assert_allclose(replay_model.cam_pos[rear_id], [-0.05, -0.02, 0.03])
+        front_data, rear_data = mujoco.MjData(self.model), mujoco.MjData(replay_model)
+        body_id = self.model.cam_bodyid[front_id]
+        # Camera -Z looks forward and camera +Y points up. Inspect MuJoCo's world transforms
+        # at two drone headings, then express both axes in the actual drone body frame.
+        for time in (0.0, 0.02):
+            state = replay_run.interpolate_state(arrays, time)
+            replay_run.restore_state(self.model, front_data, state, time)
+            replay_run.restore_state(replay_model, rear_data, state, time)
+            body_rotation = front_data.xmat[body_id].reshape(3, 3)
+            front_rotation = front_data.cam_xmat[front_id].reshape(3, 3)
+            rear_rotation = rear_data.cam_xmat[rear_id].reshape(3, 3)
+            front_direction = body_rotation.T @ -front_rotation[:, 2]
+            rear_direction = body_rotation.T @ -rear_rotation[:, 2]
+            front_up = body_rotation.T @ front_rotation[:, 1]
+            rear_up = body_rotation.T @ rear_rotation[:, 1]
+            np.testing.assert_allclose(front_direction, [1, 0, 0], atol=1e-12)
+            np.testing.assert_allclose(rear_direction, -front_direction, atol=1e-12)
+            np.testing.assert_allclose(front_up, [0, 0, 1], atol=1e-12)
+            np.testing.assert_allclose(rear_up, front_up, atol=1e-12)
+            np.testing.assert_allclose(
+                body_rotation.T @ (front_data.cam_xpos[front_id] - front_data.xpos[body_id]),
+                [0.05, 0.02, 0.03],
+                atol=1e-12,
+            )
+            np.testing.assert_allclose(
+                body_rotation.T @ (rear_data.cam_xpos[rear_id] - rear_data.xpos[body_id]),
+                [-0.05, -0.02, 0.03],
+                atol=1e-12,
+            )
+        np.testing.assert_array_equal(arrays["model_mjb"], snapshot)
+        np.testing.assert_allclose(self.model.cam_pos[front_id], [0.05, 0.02, 0.03])
+        with self.assertRaises(ValueError):
+            replay_run._camera(replay_model, arrays, metadata, "fpv_rear", 5, None, None, None)
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg is required to inspect the video layout")
+    def test_six_view_video_keeps_two_rows_and_synchronized_frame_order(self) -> None:
+        """Decoded video places all six views correctly and preserves frame order."""
+        width, height, fps = 32, 16, 60
+        colors = np.array(
+            [
+                [240, 20, 20],
+                [20, 240, 20],
+                [20, 20, 240],
+                [240, 240, 20],
+                [240, 20, 240],
+                [20, 240, 240],
+            ],
+            dtype=np.uint8,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sources = []
+            for index, color in enumerate(colors):
+                path = root / f"view_{index}.mp4"
+                with _REAL_VIDEO_WRITER(path, fps, width, height) as writer:
+                    for scale in (0.5, 1.0):
+                        writer.write(
+                            np.broadcast_to((color * scale).astype(np.uint8), (height, width, 3))
+                        )
+                sources.append(path)
+            output = _run_io.combine_views(
+                sources, root / "preview.mp4", fps=fps, width=width, height=height
+            )
+            decoded = subprocess.run(
+                [
+                    shutil.which("ffmpeg"),
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-i",
+                    str(output),
+                    "-f",
+                    "rawvideo",
+                    "-pix_fmt",
+                    "rgb24",
+                    "pipe:1",
+                ],
+                capture_output=True,
+                check=True,
+            ).stdout
+        frames = np.frombuffer(decoded, dtype=np.uint8).reshape(-1, 2 * height, 3 * width, 3)
+        self.assertEqual(len(frames), 2)
+        centers = [(height // 2, width // 2 + index * width) for index in range(3)]
+        centers.extend([(height + height // 2, width // 2 + index * width) for index in range(3)])
+        for frame, scale in zip(frames, (0.5, 1.0), strict=True):
+            np.testing.assert_allclose(
+                [frame[y, x] for y, x in centers], colors.astype(float) * scale, atol=15
+            )
+
     def test_replay_renders_saved_states_without_controller_or_dynamics(self) -> None:
         """The complete replay path loads the snapshot, not a new race/controller."""
         arrays, metadata = sample_trajectory(self.model)
@@ -222,19 +361,34 @@ class TrajectoryAndReplayTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "trajectory.npz"
             np.savez_compressed(path, **arrays, metadata_json=json.dumps(metadata))
-            with (
-                mock.patch.object(mujoco, "Renderer", Renderer),
-                mock.patch.object(mujoco, "mj_step", side_effect=AssertionError("dynamics")),
-                mock.patch.object(mujoco, "mj_forward", side_effect=AssertionError("dynamics")),
-                mock.patch.object(replay_run, "VideoWriter", MemoryVideoWriter),
-            ):
-                result = replay_run.replay(path, fps=60, width=2, height=2)
-            self.assertEqual(Path(result).parent, path.parent)
-        self.assertEqual(len(rendered_states), 3)
-        self.assertEqual(rendered_states[0][0], 0.0)
-        self.assertEqual(rendered_states[-1][0], 0.04)
-        np.testing.assert_allclose(rendered_states[-1][1], arrays["mocap_pos"][-1])
-        self.assertTrue(MemoryVideoWriter.instances[-1].closed)
+            for index, frame_times in enumerate((None, np.array([0.0, 0.0, 0.04]))):
+                with self.subTest(held_frames=frame_times is not None):
+                    rendered_states.clear()
+                    with (
+                        mock.patch.object(mujoco, "Renderer", Renderer),
+                        mock.patch.object(
+                            mujoco, "mj_step", side_effect=AssertionError("dynamics")
+                        ),
+                        mock.patch.object(
+                            mujoco, "mj_forward", side_effect=AssertionError("dynamics")
+                        ),
+                        mock.patch.object(replay_run, "VideoWriter", MemoryVideoWriter),
+                    ):
+                        result = replay_run.replay(
+                            path,
+                            fps=60,
+                            width=2,
+                            height=2,
+                            output=path.parent / f"replay_{index}.mp4",
+                            frame_times=frame_times,
+                        )
+                    self.assertEqual(Path(result).parent, path.parent)
+                    expected = [0, 1 / 60, 0.04] if frame_times is None else frame_times
+                    np.testing.assert_allclose([state[0] for state in rendered_states], expected)
+                    np.testing.assert_allclose(rendered_states[-1][1], arrays["mocap_pos"][-1])
+                    if frame_times is not None:
+                        np.testing.assert_array_equal(rendered_states[0][1], rendered_states[1][1])
+                    self.assertTrue(MemoryVideoWriter.instances[-1].closed)
 
 
 class OfficialLoopRecordingTests(unittest.TestCase):
@@ -273,6 +427,7 @@ class OfficialLoopRecordingTests(unittest.TestCase):
             ) -> np.ndarray:
                 self.viewer = SimpleNamespace() if self.viewer is None else self.viewer
                 events.append(("render", env.tick))
+                env.render_cameras.append(camera)
                 if mode != "rgb_array":
                     raise AssertionError("The official render call must become headless RGB")
                 if self.data is not env.data.sim_data:
@@ -286,6 +441,7 @@ class OfficialLoopRecordingTests(unittest.TestCase):
                 self.sim = Sim()
                 self.tick = 0
                 self.closed = False
+                self.render_cameras = []
                 self.reset_count = 0
                 self.reset_seeds = []
                 self.controller_seeds = []
@@ -394,26 +550,12 @@ class OfficialLoopRecordingTests(unittest.TestCase):
 
         return env, Controller, events
 
-    def execute_recording(
-        self,
-        *,
-        callback_error: bool = False,
-        controller_stop: bool = False,
-        n_runs: int = 1,
-        error_episode: int = 1,
-    ) -> tuple:
-        """Run official simulate and verify hooks restore while their outer mocks remain."""
+    @staticmethod
+    def configuration() -> object:
+        """Return a fresh official config with a stable seed for each test."""
         from ml_collections import ConfigDict
 
-        from personal_tools import record_run
-
-        official = record_run.official_sim
-        env, controller, events = self.make_race(
-            callback_error=callback_error,
-            controller_stop=controller_stop,
-            error_episode=error_episode,
-        )
-        configuration = ConfigDict(
+        return ConfigDict(
             {
                 "controller": {"file": "fake.py"},
                 "sim": {"render": False},
@@ -427,6 +569,25 @@ class OfficialLoopRecordingTests(unittest.TestCase):
                 },
             }
         )
+
+    def execute_recording(
+        self,
+        *,
+        callback_error: bool = False,
+        controller_stop: bool = False,
+        n_runs: int = 1,
+        error_episode: int = 1,
+    ) -> tuple:
+        """Run official simulate and verify hooks restore while their outer mocks remain."""
+        from personal_tools import record_run
+
+        official = record_run.official_sim
+        env, controller, events = self.make_race(
+            callback_error=callback_error,
+            controller_stop=controller_stop,
+            error_episode=error_episode,
+        )
+        configuration = self.configuration()
         MemoryVideoWriter.instances.clear()
         original_render = env.sim.render
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
@@ -578,6 +739,169 @@ class OfficialLoopRecordingTests(unittest.TestCase):
         np.testing.assert_allclose(episodes[0][0]["time"], [0, 0.02, 0.04])
         np.testing.assert_allclose(episodes[1][0]["time"], [0, 0.02])
         self.assertEqual(events.count(("close", 1)), 1)
+
+    def test_public_recording_synchronizes_six_views_after_official_batch(self) -> None:
+        """One official call per batch supplies all synchronized camera videos."""
+        from personal_tools import record_run
+
+        for n_runs in (1, 3):
+            with self.subTest(n_runs=n_runs):
+                official = record_run.official_sim
+                env, controller, events = self.make_race()
+                # The recording's overview must stay a free world camera even if the
+                # environment config normally selects its onboard camera.
+                env.settings.camera = "fpv"
+                snapshots = {}
+                MemoryVideoWriter.instances.clear()
+
+                def replay_saved(path: Path, **kwargs: object) -> Path:
+                    self.assertTrue(env.closed)
+                    events.append(("replay", kwargs["camera"]))
+                    path = Path(path)
+                    snapshots.setdefault(path, path.read_bytes())
+                    self.assertEqual(path.read_bytes(), snapshots[path])
+                    world = next(
+                        writer
+                        for writer in MemoryVideoWriter.instances
+                        if writer.path == path.parent / "views" / "world.mp4"
+                    )
+                    np.testing.assert_allclose(
+                        kwargs["frame_times"], [int(frame[0, 0, 0]) / 50 for frame in world.frames]
+                    )
+                    self.assertEqual(kwargs["fps"], 60)
+                    self.assertEqual((kwargs["width"], kwargs["height"]), (2, 2))
+                    destination = Path(kwargs["output"])
+                    offset = kwargs.get("azimuth_offset", 0)
+                    name = f"world_{offset:g}" if kwargs["camera"] == "world" else kwargs["camera"]
+                    self.assertEqual(destination, path.parent / "views" / f"{name}.mp4")
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    destination.write_bytes(b"test replay")
+                    return destination
+
+                def combine_saved(
+                    paths: list[Path], output: Path, fps: float, width: int, height: int
+                ) -> Path:
+                    self.assertTrue(env.closed)
+                    events.append(("combine", "preview"))
+                    output = Path(output)
+                    self.assertEqual(
+                        [Path(path) for path in paths],
+                        [
+                            output.parent / "views" / f"{view}.mp4"
+                            for view in (
+                                "world",
+                                "world_120",
+                                "world_240",
+                                "top",
+                                "fpv",
+                                "fpv_rear",
+                            )
+                        ],
+                    )
+                    self.assertEqual(output.name, "preview.mp4")
+                    self.assertEqual((fps, width, height), (60, 2, 2))
+                    output.write_bytes(b"test combined preview")
+                    return output
+
+                with tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
+                    root = Path(temporary)
+                    config_path, controller_path = root / "fake.toml", root / "fake.py"
+                    config_path.write_text("# test config\n")
+                    controller_path.write_text("# test controller\n")
+                    factory = stack.enter_context(
+                        mock.patch.object(official.gymnasium, "make", return_value=env)
+                    )
+                    stack.enter_context(
+                        mock.patch.object(
+                            official, "load_config", return_value=self.configuration()
+                        )
+                    )
+                    loader = stack.enter_context(
+                        mock.patch.object(official, "load_controller", return_value=controller)
+                    )
+                    stack.enter_context(mock.patch.object(official, "log_episode_stats"))
+                    loop = stack.enter_context(
+                        mock.patch.object(official, "simulate", wraps=official.simulate)
+                    )
+                    stack.enter_context(
+                        mock.patch.object(_run_io, "VideoWriter", MemoryVideoWriter)
+                    )
+                    replay = stack.enter_context(
+                        mock.patch.object(record_run, "replay", side_effect=replay_saved)
+                    )
+                    combine = stack.enter_context(
+                        mock.patch.object(record_run, "combine_views", side_effect=combine_saved)
+                    )
+                    output = record_run.record_run(
+                        config=str(config_path),
+                        controller=str(controller_path),
+                        output_dir=root / "recorded",
+                        fps=60,
+                        width=2,
+                        height=2,
+                        n_runs=n_runs,
+                    )
+                    loop.assert_called_once_with(
+                        config=str(config_path),
+                        controller=str(controller_path),
+                        n_runs=n_runs,
+                        render=True,
+                    )
+                    factory.assert_called_once()
+                    loader.assert_called_once()
+                    self.assertEqual(replay.call_count, 5 * n_runs)
+                    self.assertEqual(combine.call_count, n_runs)
+                    self.assertEqual(
+                        [
+                            (call.kwargs["camera"], call.kwargs.get("azimuth_offset", 0))
+                            for call in replay.call_args_list
+                        ],
+                        [("world", 120), ("world", 240), ("top", 0), ("fpv", 0), ("fpv_rear", 0)]
+                        * n_runs,
+                    )
+                    close_index = events.index(("close", 2))
+                    self.assertTrue(
+                        all(
+                            index > close_index
+                            for index, event in enumerate(events)
+                            if event[0] in ("replay", "combine")
+                        )
+                    )
+                    directories = (
+                        [output]
+                        if n_runs == 1
+                        else [output / f"run_{index:04d}" for index in range(1, n_runs + 1)]
+                    )
+                    for index, directory in enumerate(directories):
+                        trajectory = directory / "trajectory.npz"
+                        self.assertEqual(trajectory.read_bytes(), snapshots[trajectory])
+                        arrays, metadata = _run_io.load_trajectory(trajectory)
+                        self.assertEqual(
+                            metadata["preview_cameras"],
+                            ["world", "world_120", "world_240", "top", "fpv", "fpv_rear"],
+                        )
+                        result = json.loads((directory / "result.json").read_text())
+                        self.assertEqual(
+                            result["video"]["layout"],
+                            [["world", "world_120", "world_240"], ["top", "fpv", "fpv_rear"]],
+                        )
+                        self.assertEqual(
+                            (result["video"]["width"], result["video"]["height"]), (6, 4)
+                        )
+                        np.testing.assert_allclose(arrays["time"], [0, 0.02, 0.04])
+                        np.testing.assert_allclose(
+                            arrays["pos"][:, 0], [[0, 0, 0.7], [0.1, 0, 0.7], [-1, -1, -1]]
+                        )
+                        np.testing.assert_allclose(arrays["gates_pos"][0, 0, 0], 0.4 + index / 10)
+                        self.assertTrue((directory / "preview.mp4").is_file())
+                        self.assertTrue((directory / "views" / "world_120.mp4").is_file())
+                        self.assertTrue((directory / "views" / "world_240.mp4").is_file())
+                        self.assertTrue((directory / "views" / "top.mp4").is_file())
+                        self.assertTrue((directory / "views" / "fpv.mp4").is_file())
+                        self.assertTrue((directory / "views" / "fpv_rear.mp4").is_file())
+                self.assertEqual(env.reset_seeds, [None] * n_runs)
+                self.assertEqual(env.controller_seeds, [7] * n_runs)
+                self.assertTrue(all(camera == -1 for camera in env.render_cameras))
 
 
 if __name__ == "__main__":
