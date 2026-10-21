@@ -1,6 +1,6 @@
 # Simulation, Recording and Replay
 
-Run commands from the repository root using the project's Python environment.
+> **Reminder:** Install Pixi, then run `pixi install --locked -e gpu` from the repository root and activate the environment with `pixi shell -e gpu` before using these tools. Activate it in each new terminal and sync dependencies again after pulling upstream updates.
 
 ## 1. Official simulation
 
