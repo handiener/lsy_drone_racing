@@ -20,6 +20,7 @@ from jax import Array
 from jax.scipy.spatial.transform import Rotation
 from stable_baselines3.common.vec_env import VecEnv
 
+from lsy_drone_racing.control.rl_single_l2.reset_mid_start import ResetConfig, build_segment_reset
 from lsy_drone_racing.control.rl_single_l2.reward import RewardConfig, compute_reward
 
 
@@ -353,13 +354,14 @@ class Level2SBXEnv(VecEnv):
     def __init__(
         self,
         config_path: str | Path,
-        n_envs: int = 16384,
+        n_envs: int = 18432,
         seed: int = 42,
         device: str = "cpu",
         max_episode_steps: int = 1500,
         observation_config: ObservationConfig | None = None,
         action_config: ActionConfig | None = None,
         reward_config: RewardConfig | None = None,
+        reset_config: ResetConfig | None = None,
     ) -> None:
         """Build an attitude-mode Level 2 simulation and initialize adapter state."""
         from lsy_drone_racing.envs.drone_race import VecDroneRaceEnv
@@ -374,6 +376,7 @@ class Level2SBXEnv(VecEnv):
         self.observation_config = observation_config or ObservationConfig()
         self.action_config = action_config or ActionConfig()
         self.reward_config = reward_config or RewardConfig()
+        self.reset_config = reset_config or ResetConfig()
         self.max_episode_steps = int(max_episode_steps)
         self.seed_value = int(seed)
         self.render_mode = None
@@ -392,6 +395,11 @@ class Level2SBXEnv(VecEnv):
         )
         self.jax_env.settings = self.jax_env.settings.replace(autoreset=False)
         self.jax_env._step = self.jax_env.build_step_fn()
+        self._segment_reset = (
+            build_segment_reset(self.reset_config, self.jax_env.build_contact_check_fn())
+            if self.reset_config.segment_init_prob
+            else None
+        )
         self.thrust_min = float(self.jax_env.single_action_space.low[3])
         self.thrust_max = float(self.jax_env.single_action_space.high[3])
         self.normalizer = RunningNormalizer(
@@ -405,9 +413,12 @@ class Level2SBXEnv(VecEnv):
         self._pending_actions: np.ndarray | None = None
         self._episode_returns = np.zeros(n_envs, dtype=np.float64)
         self._episode_lengths = np.zeros(n_envs, dtype=np.int64)
+        self._episode_start_gate = np.zeros(n_envs, dtype=np.int32)
+        self._episode_is_segment = np.zeros(n_envs, dtype=bool)
         self._closed = False
         self._restored_pending: dict[str, Any] | None = None
         self._completed_episodes: deque = deque(maxlen=1000)
+        self._completed_segment_episodes: deque = deque(maxlen=1000)
         self._reward_sums = {key: jnp.zeros(()) for key in asdict(self.reward_config)}
         self._reward_transitions = 0
         observation_space = spaces.Box(
@@ -421,17 +432,44 @@ class Level2SBXEnv(VecEnv):
         action_space = spaces.Box(-1e6, 1e6, shape=(4,), dtype=np.float32)
         super().__init__(n_envs, observation_space, action_space)
 
+    def _reset_worlds(
+        self, mask: np.ndarray | None = None, seed: int | None = None
+    ) -> tuple[dict[str, Array], dict]:
+        """Apply the official reset, then optionally replace only reset worlds."""
+        from lsy_drone_racing.envs.race_core import obs as race_obs
+
+        if mask is None:
+            raw, info = self.jax_env.reset(seed=seed)
+            mask = np.ones(self.num_envs, dtype=bool)
+        else:
+            self.jax_env.data, (raw, info) = self.jax_env._reset(
+                self.jax_env.data, seed=None, mask=jnp.asarray(mask)
+            )
+            raw = {key: value[:, 0] for key, value in raw.items()}
+        self._episode_start_gate[mask] = 0
+        self._episode_is_segment[mask] = False
+        if self._segment_reset is not None:
+            self.jax_env.data, segment, starts = self._segment_reset(
+                self.jax_env.data, jnp.asarray(mask)
+            )
+            segment, starts = jax.device_get((segment, starts))
+            self._episode_is_segment[mask] = segment[mask]
+            self._episode_start_gate[mask] = starts[mask]
+            raw = {key: value[:, 0] for key, value in race_obs(self.jax_env.data).items()}
+        return raw, info
+
     def reset(self) -> np.ndarray:
         """Reset all worlds, preserving previously learned normalization moments."""
         # Seed only explicitly requested full resets; subsequent resets advance RNGs.
         reset_seed = self._seeds[0]
-        raw, info = self.jax_env.reset(seed=reset_seed)
+        raw, info = self._reset_worlds(seed=reset_seed)
         self._current_obs = raw
         self._previous_action = jnp.zeros_like(self._previous_action)
         self._pending_actions = None
         self._episode_returns.fill(0)
         self._episode_lengths.fill(0)
         self._completed_episodes.clear()
+        self._completed_segment_episodes.clear()
         self._reward_sums = {key: jnp.zeros_like(value) for key, value in self._reward_sums.items()}
         self._reward_transitions = 0
         self._pending_normalizer = RunningNormalizer(self.observation_config.size)
@@ -470,8 +508,9 @@ class Level2SBXEnv(VecEnv):
         means = {
             key: float(value) / max(1, self._reward_transitions) for key, value in totals.items()
         }
-        episodes = list(self._completed_episodes)
+        episodes = list(self._completed_episodes) + list(self._completed_segment_episodes)
         self._completed_episodes.clear()
+        self._completed_segment_episodes.clear()
         self._reward_sums = {key: jnp.zeros_like(value) for key, value in self._reward_sums.items()}
         self._reward_transitions = 0
         return means, episodes
@@ -535,14 +574,21 @@ class Level2SBXEnv(VecEnv):
             finished, passed = metrics["finished"], metrics["passed"]
             sequence_length = current["gate_sequence"].shape[1]
             for index in np.flatnonzero(done):
+                start_gate = int(self._episode_start_gate[index])
+                segment_start = bool(self._episode_is_segment[index])
                 info = {
                     "TimeLimit.truncated": bool(truncated[index] and not terminated[index]),
                     "finished": bool(finished[index]),
-                    "is_success": bool(finished[index]),
+                    "is_success": bool(finished[index] and not segment_start),
                     "crash": bool(terminated[index] and not finished[index]),
                     "timeout": bool(truncated[index] and not terminated[index]),
                     "n_gates_passed": int(passed[index]),
-                    "gate_progress": float(passed[index] / sequence_length),
+                    "gate_progress": float(
+                        (passed[index] - start_gate) / (sequence_length - start_gate)
+                    ),
+                    "gates_passed": int(passed[index] - start_gate),
+                    "start_gate": start_gate,
+                    "segment_start": segment_start,
                 }
                 info["terminal_observation"] = terminal_observations[index].copy()
                 info["episode"] = {
@@ -554,11 +600,11 @@ class Level2SBXEnv(VecEnv):
                     self._episode_lengths[index] / self.config.env.freq if finished[index] else None
                 )
                 infos[index] = info
-                self._completed_episodes.append(info)
-            self.jax_env.data, (reset_raw, _) = self.jax_env._reset(
-                self.jax_env.data, seed=None, mask=done_device
-            )
-            current = {key: value[:, 0] for key, value in reset_raw.items()}
+                if segment_start:
+                    self._completed_segment_episodes.append(info)
+                else:
+                    self._completed_episodes.append(info)
+            current, _ = self._reset_worlds(mask=done)
             self._episode_returns[done] = 0
             self._episode_lengths[done] = 0
             for index in np.flatnonzero(done):
@@ -574,6 +620,7 @@ class Level2SBXEnv(VecEnv):
             "observation": asdict(self.observation_config),
             "action": asdict(self.action_config),
             "reward": asdict(self.reward_config),
+            "reset": asdict(self.reset_config),
             "thrust_min": self.thrust_min,
             "thrust_max": self.thrust_max,
             "observation_dim": self.observation_space.shape[0],

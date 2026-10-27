@@ -30,6 +30,12 @@ in the base project dependencies, so installing `gpu` already includes them.
 The run name is generated from the current time, and logs and checkpoints are saved
 automatically. No other training arguments are required.
 
+Defaults use **18,432 parallel environments**, minibatches of **18,432** and a
+**300 million transition** target. Rollouts remain 256 steps per environment and
+episodes remain capped at 1,500 steps (30 seconds at 50 Hz).
+Training resets request **60% official starts / 40% Phase 1 gate-entry starts**.
+Evaluation always uses official starts. See [Phase 1 Resets](#phase-1-resets) below.
+
 To name an experiment yourself, append `--run_name=l2_run_001`. Existing run directories
 are preserved; use a new name for each experiment.
 
@@ -44,6 +50,7 @@ pixi run -e gpu python -m lsy_drone_racing.control.rl_single_l2.train \
 
 This evaluates five episodes at each evaluation point and keeps the best evaluated model
 in `checkpoints/best/`. It selects a model without stopping training early.
+The reset mixture applies only to training; `eval/` scores are full races from official starts.
 Omit `--eval_freq` or set it to `0` to disable evaluation.
 
 ### Command-Line Options
@@ -58,9 +65,9 @@ training simulator and JAX device. Append `--help` to the training command for C
 | --- | --- | --- |
 | `--device=gpu` | `cpu` | Run the simulator and JAX policy on `gpu` or `cpu`. |
 | `--run_name=l2_run_001` | Generated timestamp | Name the experiment folder; existing folders are preserved. |
-| `--total_timesteps=155000000` | `155000000` | Cumulative transition target across all parallel environments. |
-| `--n_envs=16384` | `16384` | Number of parallel simulation worlds. |
-| `--batch_size=16384` | `16384` | Transitions in each PPO minibatch. |
+| `--total_timesteps=300000000` | `300000000` | Cumulative transition target across all parallel environments. |
+| `--n_envs=18432` | `18432` | Number of parallel simulation worlds. |
+| `--batch_size=18432` | `18432` | Transitions in each PPO minibatch. |
 | `--seed=42` | `42` | Training random seed. |
 | `--eval_freq=1000000` | `0` (off) | Enable evaluation and best-model selection at this transition interval. |
 | `--eval_episodes=5` | `5` | Episodes per evaluation; used when evaluation is enabled. |
@@ -88,14 +95,23 @@ training simulator and JAX device. Append `--help` to the training command for C
 | `--obstacle_count=4` | `4` | Number of nearest obstacle slots included in the observation. |
 | `--alpha_max_rad=0.16` | `0.16` | Maximum proposed body rotation increment per control step, in radians. |
 
+**Phase 1 training resets**
+
+| Option | Default | Purpose |
+| --- | --- | --- |
+| `--segment_init_prob=0.40` | `0.40` | Request a gate-entry start for this fraction of training resets; `0` disables Phase 1. |
+| `--segment_init_offset_m=0.50` | `0.50` | Distance before the nominal target gate along its signed crossing axis, in meters. |
+| `--segment_init_vel_mps=2.50` | `2.50` | Initial speed along that crossing axis, in m/s; `0` starts at rest. |
+| `--segment_init_perturb_m=0.10` | `0.10` | Independent uniform position noise in `[-value, +value]` meters on each world axis. |
+
 `batch_size` must be at least two and divide `n_envs × n_steps` exactly. Saving and
 evaluation wait until a complete PPO update has finished, so their actual intervals
 round up to rollout boundaries. A normal training finish saves a final checkpoint even
 when periodic saving is disabled.
 
-With the defaults, each rollout collects `16384 × 256 = 4,194,304` transitions and each
-epoch has 256 minibatches. The reference budget rounds up to **37 rollouts, or
-155,189,248 transitions**. Thus `--eval_freq=1000000` evaluates once per rollout at this scale.
+With the defaults, each rollout collects `18432 × 256 = 4,718,592` transitions and each
+epoch has 256 minibatches. The target rounds up to **64 rollouts, or
+301,989,888 transitions**. Thus `--eval_freq=1000000` evaluates once per rollout at this scale.
 
 For `resume`, saved PPO and environment settings take precedence over new values for
 those settings. The total target and save/evaluation options apply to the continuation;
@@ -171,7 +187,8 @@ finish/crash coefficients follow its
 The gate bonus is explicitly included here (the reference computes it but omits it
 from the final sum in `reward.py`).
 Guidance fields, obstacle/frame barriers and action-smoothness penalties are omitted.
-Curriculum training, intermediate starts and success-state caching are not included.
+Phase 1 changes the training reset distribution; it does not add reward terms.
+Multi-stage curricula and Phase 2 success-state replay are not included.
 
 To compare this reward against the earlier five-term run, use the Quick Start command
 to start a **new run**. Its configuration and checkpoints record all six coefficients;
@@ -181,10 +198,42 @@ the earlier training outputs are preserved.
 | --- | --- |
 | `train.py` | CLI, effective configuration, output paths and training startup |
 | `env_wrapper.py` | Simulator adapter, observations, actions, normalization and reward integration |
+| `reset_mid_start.py` | Phase 1 reset configuration, gate-entry state proposals and validity checks |
 | `reward.py` | Six reward coefficients and the JAX reward/component calculation |
 | `policy.py` | Actor/Critic networks, the Gaussian distribution and the SBX policy binding |
 | `callbacks.py`, `checkpoint.py` | Metrics, evaluation, checkpoint timing, saving/loading and export |
 | `controller.py`, `../rl_single_level2_controller.py` | Actor inference and the official loader entry point |
+
+## Phase 1 Resets
+
+`reset_mid_start.py` implements Phase 1 initialization; `env_wrapper.py` calls it
+after the official reset and maintains episode bookkeeping. Phase 2 is not implemented.
+
+On initial reset and each completed training episode, the adapter first performs the
+official reset and randomization. With probability `segment_init_prob`, it then samples
+a target **sequence entry**, including repeated/reverse gates, and proposes a start
+`0.50 m` before that gate's nominal center, plus uniform `+/-0.10 m` position noise.
+Initial velocity is `2.50 m/s` along the required crossing direction. Roll and pitch are
+zero, yaw follows that direction clipped to the official attitude range, and angular
+velocity is zero. Historical position, start counters and sensor-range masks are refreshed;
+unseen geometry stays masked. These are synthetic starts, not states copied from old flights.
+The geometry, noise and speed follow the
+[reference Phase 1 implementation](https://github.com/ang-weilun/lsy_drone_racing/blob/fa2c4f63c37f26b2dcbb6898ad805b7d1bd31cd1/lsy_drone_racing/control/rl_song/rollout.py#L1118-L1262),
+adapted to the current sequence and action interfaces.
+
+Proposals outside the bounds, on the wrong side of the randomized gate, or in collision
+fall back to the official start. Consequently, 40% is the requested sampling probability;
+the accepted fraction can be lower. Only reset worlds change, and initialization grants
+no gate or completion reward. Use `--segment_init_prob=0` for official starts only.
+
+`episodes/` reports recent **official-start** training episodes. `segment_start/` reports
+gate-entry episodes separately: `finished` means finishing the remaining suffix, and
+`gate_progress` is newly passed gates divided by the number remaining at spawn.
+`rollout/` episode return/length and `reward/` include both sources.
+`eval/` always measures complete races from official starts; evaluation rejects a nonzero
+segment probability. The reset configuration is saved with the run/checkpoints. To add
+Phase 1 to an older model, use `warm_start`; `resume` restores the saved reset settings
+(older checkpoints without reset settings use official starts only).
 
 ## Outputs and Evaluation
 
@@ -198,20 +247,21 @@ outputs/<generated_run_name>/
 │   ├── progress.csv
 │   └── progress.json           # JSON Lines
 └── checkpoints/
-    ├── step_000020971520/       # First periodic checkpoint with the default rollout size
+    ├── step_000023592960/       # First periodic checkpoint with the default rollout size
     └── best/                   # Created when separate evaluation is enabled
 ```
 
 | Metric group | What to inspect |
 | --- | --- |
-| `rollout/`, `episodes/` | Episode return, completion rate, gate progress, crashes, timeouts and successful flight time |
+| `rollout/` | Mixed training-source episode return and length |
+| `episodes/`, `segment_start/` | Separate official-start and gate-entry training completion, progress, crash and timeout metrics |
 | `train/` | Policy/value losses, entropy, approximate KL, clip fraction and learning rate |
 | `actions/`, `reward/` | Each action head's mean/std and individual reward terms |
 | `time/`, `eval/` | Training speed and, when enabled, independent evaluation results |
 
 Saving defaults to every 20,000,000 cumulative transitions, matching the reference interval
 and keeping the latest **three** regular checkpoints. Saves occur after complete PPO
-updates, so at this scale the first periodic save is at 20,971,520 transitions and later
+updates, so at this scale the first periodic save is at 23,592,960 transitions and later
 periodic saves are five rollouts apart. A final checkpoint is also saved when training
 finishes normally, and its directory is printed in the terminal. Exceptions and Ctrl+C
 close resources without adding a final checkpoint; resume from the last completed save.
@@ -229,17 +279,29 @@ to the configured `total_timesteps` target.
 ## Resume or Start a New Experiment
 
 Replace `/path/to/checkpoint` with a **checkpoint directory**, such as a `step_...` folder.
-This command resumes training and extends the **cumulative target** to 300 million transitions:
+This command resumes training and extends the **cumulative target** to 600 million transitions:
 
 ```bash
 pixi run -e gpu python -m lsy_drone_racing.control.rl_single_l2.train \
-  --device=gpu --mode=resume --checkpoint="/path/to/checkpoint" --total_timesteps=300000000
+  --device=gpu --mode=resume --checkpoint="/path/to/checkpoint" --total_timesteps=600000000
 ```
 
 | Mode | Restored state | Training settings |
 | --- | --- | --- |
 | `resume` | Actor, Critic, optimizers, normalization statistics, step counts and RNG state | Reuses saved PPO/environment settings; total target must exceed saved steps |
 | `warm_start` | Actor, Critic and frozen normalization statistics; fresh optimizers and zero counters | Uses the new command-line settings |
+
+To warm-start with the current defaults and evaluation enabled:
+
+```bash
+pixi run -e gpu python -m lsy_drone_racing.control.rl_single_l2.train \
+  --device=gpu --mode=warm_start --checkpoint="/path/to/checkpoint" --eval_freq=1000000
+```
+
+For `warm_start`, the default 300 million target is a **new training budget**, because
+its counter starts at zero. Renaming an old run folder is supported; pass the checkpoint's
+actual current path. For `resume`, the saved environment count and PPO settings are reused,
+including the saved reset mixture, even if the defaults have since changed.
 
 Both modes create a new run directory. Physical simulator states are not saved, so
 episodes restart on resume; continuation is not step-for-step identical.

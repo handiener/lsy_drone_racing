@@ -20,6 +20,8 @@ def evaluate_policy(model: Any, env: Level2SBXEnv, episodes: int, seed: int) -> 
     """Evaluate on the same independent seeds each time, with deterministic actions."""
     if env.num_envs != 1 or episodes < 1:
         raise ValueError("Evaluation needs one world and a positive episode count")
+    if env.reset_config.segment_init_prob:
+        raise ValueError("Evaluation requires official starts: segment_init_prob must be zero")
     results = []
     for episode in range(episodes):
         env.seed(seed + episode)
@@ -70,6 +72,7 @@ class TrainingCallback(BaseCallback):
         self.eval_env, self.eval_freq = eval_env, eval_freq
         self.eval_episodes, self.eval_seed = eval_episodes, eval_seed
         self.episodes: deque = deque(maxlen=1000)
+        self.segment_episodes: deque = deque(maxlen=1000)
         self.last_save = self.last_eval = 0
         self.best_score = (-1.0, -1.0, -float("inf"))
         self.last_checkpoint: Path | None = None
@@ -128,17 +131,26 @@ class TrainingCallback(BaseCallback):
 
     def _on_rollout_end(self) -> None:
         reward_means, episodes = self.env.drain_metrics()
-        self.episodes.extend(episodes)
+        for episode in episodes:
+            target = self.segment_episodes if episode["segment_start"] else self.episodes
+            target.append(episode)
         for key, value in reward_means.items():
             self.logger.record(f"reward/{key}", value)
-        if self.episodes:
+        for prefix, history in (
+            ("episodes", self.episodes),
+            ("segment_start", self.segment_episodes),
+        ):
+            if not history:
+                continue
+            self.logger.record(f"{prefix}/count", len(history))
             for metric in ("finished", "crash", "timeout", "gate_progress"):
-                self.logger.record(
-                    f"episodes/{metric}", np.mean([row[metric] for row in self.episodes])
-                )
-            times = [row["success_time"] for row in self.episodes if row["finished"]]
+                self.logger.record(f"{prefix}/{metric}", np.mean([row[metric] for row in history]))
+            self.logger.record(
+                f"{prefix}/gates_passed", np.mean([row["gates_passed"] for row in history])
+            )
+            times = [row["success_time"] for row in history if row["finished"]]
             if times:
-                self.logger.record("episodes/success_time", np.mean(times))
+                self.logger.record(f"{prefix}/success_time", np.mean(times))
         buffer = self.model.rollout_buffer.observations
         sample = buffer.reshape(-1, self.env.observation_config.size)
         sample = sample[:: max(1, len(sample) // 1024)][:1024]

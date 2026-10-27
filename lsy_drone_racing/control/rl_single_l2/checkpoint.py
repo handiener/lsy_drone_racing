@@ -121,6 +121,17 @@ def load_checkpoint(
     for key in keys:
         if metadata["environment"][key] != current[key]:
             raise ValueError(f"Checkpoint environment setting differs: {key}")
+    if mode == "resume":
+        from dataclasses import asdict
+
+        from lsy_drone_racing.control.rl_single_l2.reset_mid_start import ResetConfig
+
+        # Earlier checkpoints used only official starts; absence means probability zero.
+        saved_reset = metadata["environment"].get(
+            "reset", asdict(ResetConfig(segment_init_prob=0.0))
+        )
+        if saved_reset != current["reset"]:
+            raise ValueError("Checkpoint reset settings differ; use warm_start to change them")
     model = PPO.load(path / "model.zip", env=env, device="cpu", force_reset=True)
     if mode == "warm_start":
         fresh = PPO(Level2Policy, env, **(ppo_kwargs or metadata["config"]["ppo"]))

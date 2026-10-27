@@ -18,6 +18,7 @@ from lsy_drone_racing.control.rl_single_l2.env_wrapper import (
     ObservationConfig,
 )
 from lsy_drone_racing.control.rl_single_l2.policy import Level2Policy
+from lsy_drone_racing.control.rl_single_l2.reset_mid_start import ResetConfig
 from lsy_drone_racing.control.rl_single_l2.reward import RewardConfig
 
 RL_DIR = Path(__file__).resolve().parent
@@ -26,10 +27,10 @@ DEFAULT_CONFIG = RL_DIR.parents[2] / "config" / "level2.toml"
 
 def train(
     run_name: str | None = None,
-    total_timesteps: int = 155_000_000,
-    n_envs: int = 16384,
+    total_timesteps: int = 300_000_000,
+    n_envs: int = 18432,
     n_steps: int = 256,
-    batch_size: int = 16384,
+    batch_size: int = 18432,
     learning_rate: float = 3e-4,
     n_epochs: int = 3,
     clip_range: float = 0.2,
@@ -51,6 +52,10 @@ def train(
     gate_lookahead: int = 2,
     obstacle_count: int = 4,
     alpha_max_rad: float = 0.16,
+    segment_init_prob: float = 0.40,
+    segment_init_offset_m: float = 0.50,
+    segment_init_vel_mps: float = 2.50,
+    segment_init_perturb_m: float = 0.10,
 ) -> str:
     """Run PPO and return the final complete checkpoint directory.
 
@@ -76,6 +81,12 @@ def train(
     observation = ObservationConfig(gate_lookahead=gate_lookahead, obstacle_count=obstacle_count)
     action = ActionConfig(alpha_max_rad=alpha_max_rad)
     reward = RewardConfig()
+    reset = ResetConfig(
+        segment_init_prob=segment_init_prob,
+        segment_init_offset_m=segment_init_offset_m,
+        segment_init_vel_mps=segment_init_vel_mps,
+        segment_init_perturb_m=segment_init_perturb_m,
+    )
     ppo_kwargs = dict(
         learning_rate=learning_rate,
         n_steps=n_steps,
@@ -97,6 +108,11 @@ def train(
         old_env = saved["environment"]
         observation = ObservationConfig(**old_env["observation"])
         action, reward = ActionConfig(**old_env["action"]), RewardConfig(**old_env["reward"])
+        reset = (
+            ResetConfig(**old_env["reset"])
+            if "reset" in old_env
+            else ResetConfig(segment_init_prob=0.0)
+        )
         max_episode_steps = old_env["max_episode_steps"]
         n_envs = saved["config"]["n_envs"]
         seed = ppo_kwargs["seed"]
@@ -130,7 +146,7 @@ def train(
                 action_config=action,
                 reward_config=reward,
             )
-            env = Level2SBXEnv(n_envs=n_envs, seed=seed, **env_kwargs)
+            env = Level2SBXEnv(n_envs=n_envs, seed=seed, reset_config=reset, **env_kwargs)
             model = (
                 PPO(Level2Policy, env, **ppo_kwargs)
                 if mode == "new"
@@ -155,7 +171,12 @@ def train(
             logger = configure(str(log_dir), ["stdout", "log", "csv", "json"])
             model.set_logger(logger)
             if eval_freq:
-                eval_env = Level2SBXEnv(n_envs=1, seed=eval_seed, **env_kwargs)
+                eval_env = Level2SBXEnv(
+                    n_envs=1,
+                    seed=eval_seed,
+                    reset_config=ResetConfig(segment_init_prob=0.0),
+                    **env_kwargs,
+                )
             callback = TrainingCallback(
                 env,
                 checkpoint_dir,

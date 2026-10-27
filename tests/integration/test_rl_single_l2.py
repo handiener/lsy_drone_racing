@@ -11,7 +11,7 @@ from jax.scipy.spatial.transform import Rotation
 from sbx import PPO
 from stable_baselines3.common.logger import configure
 
-from lsy_drone_racing.control.rl_single_l2.callbacks import TrainingCallback
+from lsy_drone_racing.control.rl_single_l2.callbacks import TrainingCallback, evaluate_policy
 from lsy_drone_racing.control.rl_single_l2.checkpoint import export_actor, load_checkpoint
 from lsy_drone_racing.control.rl_single_l2.env_wrapper import (
     Level2SBXEnv,
@@ -19,6 +19,7 @@ from lsy_drone_racing.control.rl_single_l2.env_wrapper import (
     encode_obs,
 )
 from lsy_drone_racing.control.rl_single_l2.policy import Level2Policy
+from lsy_drone_racing.control.rl_single_l2.reset_mid_start import ResetConfig
 from lsy_drone_racing.control.rl_single_l2.reward import compute_reward
 from lsy_drone_racing.envs.race_core import obs as race_obs
 from lsy_drone_racing.utils import load_config, load_controller
@@ -36,7 +37,9 @@ def assert_tree_equal(left: Any, right: Any):
 
 @pytest.mark.integration
 def test_masked_reset_preserves_other_world_and_timeout_terminal_observation():
-    env = Level2SBXEnv(CONFIG, n_envs=2, max_episode_steps=3)
+    env = Level2SBXEnv(
+        CONFIG, n_envs=2, max_episode_steps=3, reset_config=ResetConfig(segment_init_prob=0)
+    )
     try:
         env.seed(7)
         env.reset()
@@ -78,7 +81,7 @@ def test_masked_reset_preserves_other_world_and_timeout_terminal_observation():
 
 @pytest.mark.integration
 def test_reward_uses_official_directional_gate_pass_counter():
-    env = Level2SBXEnv(CONFIG, n_envs=2)
+    env = Level2SBXEnv(CONFIG, n_envs=2, reset_config=ResetConfig(segment_init_prob=0))
     try:
         env.seed(7)
         env.reset()
@@ -106,9 +109,146 @@ def test_reward_uses_official_directional_gate_pass_counter():
 
 
 @pytest.mark.integration
+def test_phase1_pose_noise_sensor_masks_reproducibility_and_masked_reset():
+    cfg = ResetConfig(segment_init_prob=1.0)
+    env = Level2SBXEnv(CONFIG, n_envs=16, reset_config=cfg)
+    try:
+        env.seed(7)
+        env.reset()
+        data = env.jax_env.data
+        selected = env._episode_is_segment.copy()
+        assert selected.any()
+        targets = env._episode_start_gate.copy()
+        rows = np.arange(env.num_envs)
+        gate_ids = np.asarray(data.gate_sequence)[targets]
+        centers = np.asarray(data.nominal_gates_pos)[rows, gate_ids]
+        normals = np.asarray(
+            Rotation.from_quat(data.nominal_gates_quat[rows, gate_ids]).as_matrix()
+        )[:, :, 0]
+        normals = normals * np.asarray(data.gate_sequence_direction)[targets, None]
+        positions = np.asarray(data.sim_data.states.pos)[:, 0]
+        noise = positions - (centers - cfg.segment_init_offset_m * normals)
+        assert np.max(np.abs(noise[selected])) <= cfg.segment_init_perturb_m + 1e-6
+        assert np.std(noise[selected]) > 0.01
+        np.testing.assert_allclose(
+            np.asarray(data.sim_data.states.vel)[selected, 0],
+            cfg.segment_init_vel_mps * normals[selected],
+            atol=1e-6,
+        )
+        np.testing.assert_array_equal(data.sim_data.states.ang_vel, 0)
+        angles = np.asarray(Rotation.from_quat(data.sim_data.states.quat[:, 0]).as_euler("xyz"))
+        np.testing.assert_allclose(angles[selected, :2], 0, atol=1e-6)
+        assert np.max(np.abs(angles[selected, 2])) <= np.pi / 2 + 1e-6
+        np.testing.assert_array_equal(data.last_drone_pos, data.sim_data.states.pos)
+        np.testing.assert_array_equal(data.takeoff_pos, data.sim_data.states.pos)
+        distance = np.linalg.norm(
+            positions[:, None, :2] - np.asarray(data.gates_pos)[:, :, :2], axis=-1
+        )
+        np.testing.assert_array_equal(np.asarray(data.gates_visited)[:, 0], distance < 0.7)
+        distance = np.linalg.norm(
+            positions[:, None, :2] - np.asarray(data.obstacles_pos)[:, :, :2], axis=-1
+        )
+        np.testing.assert_array_equal(np.asarray(data.obstacles_visited)[:, 0], distance < 0.7)
+        assert not np.asarray(env.jax_env.build_contact_check_fn()(data))[selected].any()
+        before = data.sim_data.states
+        env.seed(7)
+        env.reset()
+        assert_tree_equal(before, env.jax_env.data.sim_data.states)
+        np.testing.assert_array_equal(selected, env._episode_is_segment)
+        # Only one world resets; all other physical states stay exactly unchanged.
+        before = env.jax_env.data.sim_data.states
+        mask = np.zeros(16, dtype=bool)
+        mask[0] = True
+        env._reset_worlds(mask=mask)
+        for old, new in zip(
+            jax.tree.leaves(before), jax.tree.leaves(env.jax_env.data.sim_data.states), strict=True
+        ):
+            np.testing.assert_array_equal(old[1:], new[1:])
+    finally:
+        env.close()
+
+
+@pytest.mark.integration
+def test_phase1_respects_reverse_sequence_and_rejects_unsafe_candidates():
+    env = Level2SBXEnv(CONFIG, n_envs=16, reset_config=ResetConfig(segment_init_prob=1.0))
+    try:
+        env.seed(13)
+        env.reset()
+        data = env.jax_env.data.replace(
+            gate_sequence=jnp.array([0, 0]), gate_sequence_direction=jnp.array([1, -1])
+        )
+        spawned, accepted, targets = env._segment_reset(data, jnp.ones(16, dtype=bool))
+        accepted, targets = np.asarray(accepted), np.asarray(targets)
+        assert set(targets[accepted]) == {0, 1}
+        local = Rotation.from_quat(spawned.nominal_gates_quat[:, 0]).apply(
+            spawned.sim_data.states.vel[:, 0], inverse=True
+        )
+        expected = np.where(targets == 0, 2.5, -2.5)
+        np.testing.assert_allclose(np.asarray(local)[accepted, 0], expected[accepted], atol=1e-6)
+        np.testing.assert_allclose(np.asarray(local)[accepted, 1:], 0, atol=1e-6)
+        # A nominal proposal outside the world must leave the official reset intact.
+        invalid = data.replace(
+            nominal_gates_pos=data.nominal_gates_pos + jnp.array([100.0, 0.0, 0.0])
+        )
+        result, accepted, _ = env._segment_reset(invalid, jnp.ones(16, dtype=bool))
+        assert not np.asarray(accepted).any()
+        assert_tree_equal(result.sim_data.states, invalid.sim_data.states)
+    finally:
+        env.close()
+
+
+@pytest.mark.integration
+def test_evaluation_rejects_phase1_starts():
+    env = Level2SBXEnv(CONFIG, n_envs=1, reset_config=ResetConfig(segment_init_prob=0.4))
+    try:
+        with pytest.raises(ValueError, match="official starts"):
+            evaluate_policy(None, env, episodes=1, seed=0)
+    finally:
+        env.close()
+
+
+@pytest.mark.integration
+def test_phase1_suffix_completion_is_not_a_full_race_success():
+    env = Level2SBXEnv(CONFIG, n_envs=2, reset_config=ResetConfig(segment_init_prob=1.0))
+    try:
+        env.seed(7)
+        env.reset()
+        data = env.jax_env.data
+        last = data.gate_sequence.shape[0] - 1
+        gate_id = data.gate_sequence[last]
+        centers = data.gates_pos[:, gate_id]
+        normals = Rotation.from_quat(data.gates_quat[:, gate_id]).as_matrix()[:, :, 0]
+        normals *= data.gate_sequence_direction[last]
+        positions = centers - 0.005 * normals
+        states = data.sim_data.states.replace(pos=positions[:, None], vel=normals[:, None])
+        env.jax_env.data = data.replace(
+            sim_data=data.sim_data.replace(states=states),
+            last_drone_pos=positions[:, None],
+            n_gates_passed=jnp.full_like(data.n_gates_passed, last),
+            gates_visited=jnp.ones_like(data.gates_visited),
+        )
+        env._current_obs = {key: value[:, 0] for key, value in race_obs(env.jax_env.data).items()}
+        env._episode_start_gate.fill(last)
+        env._episode_is_segment.fill(True)
+        _, _, done, infos = env.step(np.zeros((2, 4), dtype=np.float32))
+        assert done.all()
+        for info in infos:
+            assert info["finished"] and not info["is_success"]
+            assert info["segment_start"] and info["gates_passed"] == 1
+            assert info["gate_progress"] == 1.0
+        means, episodes = env.drain_metrics()
+        assert means["gate_pass"] == 10 and means["completion"] == 100
+        assert all(row["segment_start"] for row in episodes)
+    finally:
+        env.close()
+
+
+@pytest.mark.integration
 def test_ppo_resume_warm_start_and_actor_export(tmp_path: Path):
     env = Level2SBXEnv(CONFIG, n_envs=2, max_episode_steps=3)
-    eval_env = Level2SBXEnv(CONFIG, n_envs=1, max_episode_steps=3)
+    eval_env = Level2SBXEnv(
+        CONFIG, n_envs=1, max_episode_steps=3, reset_config=ResetConfig(segment_init_prob=0)
+    )
     logger = configure(str(tmp_path / "logs"), ["csv"])
     try:
         kwargs = dict(n_steps=4, batch_size=4, n_epochs=1, seed=3, device="cpu")
