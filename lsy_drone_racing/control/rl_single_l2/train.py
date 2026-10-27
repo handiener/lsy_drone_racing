@@ -16,9 +16,9 @@ from lsy_drone_racing.control.rl_single_l2.env_wrapper import (
     ActionConfig,
     Level2SBXEnv,
     ObservationConfig,
-    RewardConfig,
 )
 from lsy_drone_racing.control.rl_single_l2.policy import Level2Policy
+from lsy_drone_racing.control.rl_single_l2.reward import RewardConfig
 
 RL_DIR = Path(__file__).resolve().parent
 DEFAULT_CONFIG = RL_DIR.parents[2] / "config" / "level2.toml"

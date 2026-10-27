@@ -7,6 +7,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from jax.scipy.spatial.transform import Rotation
 from sbx import PPO
 from stable_baselines3.common.logger import configure
 
@@ -14,11 +15,12 @@ from lsy_drone_racing.control.rl_single_l2.callbacks import TrainingCallback
 from lsy_drone_racing.control.rl_single_l2.checkpoint import export_actor, load_checkpoint
 from lsy_drone_racing.control.rl_single_l2.env_wrapper import (
     Level2SBXEnv,
-    compute_reward,
     decode_action,
     encode_obs,
 )
 from lsy_drone_racing.control.rl_single_l2.policy import Level2Policy
+from lsy_drone_racing.control.rl_single_l2.reward import compute_reward
+from lsy_drone_racing.envs.race_core import obs as race_obs
 from lsy_drone_racing.utils import load_config, load_controller
 
 CONFIG = Path(__file__).parents[2] / "config/level2.toml"
@@ -75,6 +77,35 @@ def test_masked_reset_preserves_other_world_and_timeout_terminal_observation():
 
 
 @pytest.mark.integration
+def test_reward_uses_official_directional_gate_pass_counter():
+    env = Level2SBXEnv(CONFIG, n_envs=2)
+    try:
+        env.seed(7)
+        env.reset()
+        data = env.jax_env.data
+        centers = data.gates_pos[:, 0]
+        normals = Rotation.from_quat(data.gates_quat[:, 0]).as_matrix()[:, :, 0]
+        direction = jnp.array([1.0, -1.0])[:, None]
+        start = centers - direction * normals * 0.005
+        velocity = direction * normals
+        states = data.sim_data.states.replace(pos=start[:, None], vel=velocity[:, None])
+        data = data.replace(
+            sim_data=data.sim_data.replace(states=states),
+            last_drone_pos=start[:, None],
+            gates_visited=jnp.ones_like(data.gates_visited),
+        )
+        env.jax_env.data = data
+        env._current_obs = {key: value[:, 0] for key, value in race_obs(data).items()}
+        _, _, done, _ = env.step(np.zeros((2, 4), dtype=np.float32))
+        np.testing.assert_array_equal(done, False)
+        np.testing.assert_array_equal(env._current_obs["n_gates_passed"].reshape(-1), [1, 0])
+        means, _ = env.drain_metrics()
+        assert means["gate_pass"] == 5.0  # +10 for the forward crossing, +0 for the wrong direction
+    finally:
+        env.close()
+
+
+@pytest.mark.integration
 def test_ppo_resume_warm_start_and_actor_export(tmp_path: Path):
     env = Level2SBXEnv(CONFIG, n_envs=2, max_episode_steps=3)
     eval_env = Level2SBXEnv(CONFIG, n_envs=1, max_episode_steps=3)
@@ -96,6 +127,7 @@ def test_ppo_resume_warm_start_and_actor_export(tmp_path: Path):
         model.learn(16, callback=callback)
         assert list((tmp_path / "checkpoints/best").glob("step_*/model.zip"))
         assert "reward/progress" in (tmp_path / "logs/progress.csv").read_text()
+        assert "reward/gate_pass" in (tmp_path / "logs/progress.csv").read_text()
         assert int(model.policy.actor_state.step) > 0
         assert any(
             not np.array_equal(a, b)

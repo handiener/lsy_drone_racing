@@ -20,6 +20,8 @@ from jax import Array
 from jax.scipy.spatial.transform import Rotation
 from stable_baselines3.common.vec_env import VecEnv
 
+from lsy_drone_racing.control.rl_single_l2.reward import RewardConfig, compute_reward
+
 
 @dataclass(frozen=True)
 class ObservationConfig:
@@ -53,17 +55,6 @@ class ActionConfig:
         """Check the rotation budget."""
         if not 0 < self.alpha_max_rad <= np.pi:
             raise ValueError("alpha_max_rad must be in (0, pi]")
-
-
-@dataclass(frozen=True)
-class RewardConfig:
-    """Weights for progress, completion, crash, angular speed and elapsed time."""
-
-    progress: float = 2.0
-    completion: float = 20.0
-    crash: float = 10.0
-    angular_velocity: float = 0.001
-    time: float = 0.01
 
 
 @jax.jit
@@ -309,49 +300,6 @@ def decode_action(
     thrust = thrust_min + (thrust_max - thrust_min) * sigmoid
     commands = jnp.column_stack([angles, thrust]).astype(jnp.float32)
     return commands[0] if single else commands
-
-
-@partial(jax.jit, static_argnames=("config",))
-def compute_reward(
-    previous_obs: dict[str, Any],
-    current_obs: dict[str, Any],
-    terminated: Array,
-    truncated: Array,
-    config: RewardConfig | None = None,
-) -> tuple[Array, dict[str, Array]]:
-    """Return dense rewards and separate terms before any autoreset occurs.
-
-    Terms are distance reduction toward the *previous* sequence target, a one-off
-    completion reward, a crash penalty, squared angular-speed penalty, and a time
-    cost per control step. The same previous sensor gate center is used for both
-    distances, avoiding artificial reward from target changes or sensor reveals.
-    Crash-warped positions contribute no progress. Timeouts are not crashes.
-    Advanced reference terms (gate alignment, obstacle clearance, action smoothing
-    and curriculum-dependent rewards) are intentionally absent in this baseline.
-    """
-    del truncated  # Timeout affects bootstrapping and episode metrics, not crash reward.
-    cfg = config or RewardConfig()
-    before, _ = _as_batch(previous_obs)
-    after, _ = _as_batch(current_obs)
-    count = before["pos"].shape[0]
-    sequence = before["gate_sequence"].astype(jnp.int32)
-    previous_passed = before["n_gates_passed"].reshape(count).astype(jnp.int32)
-    finished = after["n_gates_passed"].reshape(count) >= sequence.shape[1]
-    crashed = jnp.asarray(terminated, dtype=bool).reshape(count) & ~finished
-    gate_ids = sequence[jnp.arange(count), jnp.minimum(previous_passed, sequence.shape[1] - 1)]
-    centers = before["gates_pos"][jnp.arange(count), gate_ids]
-    progress = jnp.linalg.norm(before["pos"] - centers, axis=-1)
-    progress -= jnp.linalg.norm(after["pos"] - centers, axis=-1)
-    progress = jnp.where(crashed | (previous_passed >= sequence.shape[1]), 0.0, progress)
-    components = {
-        "progress": cfg.progress * progress,
-        "completion": cfg.completion * finished.astype(jnp.float32),
-        "crash": -cfg.crash * crashed.astype(jnp.float32),
-        "angular_velocity": -cfg.angular_velocity * jnp.sum(after["ang_vel"] ** 2, axis=-1),
-        "time": jnp.full(count, -cfg.time),
-    }
-    reward = jnp.sum(jnp.stack(list(components.values())), axis=0).astype(jnp.float32)
-    return reward, {key: value.astype(jnp.float32) for key, value in components.items()}
 
 
 @partial(jax.jit, static_argnames=("config",))

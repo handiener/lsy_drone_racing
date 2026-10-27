@@ -9,11 +9,11 @@ from scipy.spatial.transform import Rotation
 from lsy_drone_racing.control.rl_single_l2.env_wrapper import (
     ObservationConfig,
     RunningNormalizer,
-    compute_reward,
     decode_action,
     encode_obs,
 )
 from lsy_drone_racing.control.rl_single_l2.policy import LOG_STD_MAX, LOG_STD_MIN
+from lsy_drone_racing.control.rl_single_l2.reward import compute_reward
 
 
 def observation() -> dict:
@@ -73,15 +73,54 @@ def test_reward_target_changes_reveals_and_termination():
     after["gates_pos"][0, 0] = 10  # sensor update must not create distance progress
     after["n_gates_passed"] = np.array(1)
     _, terms = compute_reward(before, after, np.array([False]), np.array([False]))
-    expected = 2 * (np.sqrt(2) - np.linalg.norm([0.8, 0, 1]))
+    expected = 15 * (np.sqrt(2) - np.linalg.norm([0.8, 0, 1]))
     np.testing.assert_allclose(terms["progress"], [expected], atol=1e-6)
+    assert terms["gate_pass"][0] == 10
     _, terms = compute_reward(before, after, np.array([True]), np.array([False]))
-    assert terms["crash"][0] == -10 and terms["progress"][0] == 0
+    assert terms["crash"][0] == -15 and terms["progress"][0] == 0
+    assert terms["gate_pass"][0] == 0
     _, terms = compute_reward(before, after, np.array([False]), np.array([True]))
     assert terms["crash"][0] == 0
     after["n_gates_passed"] = np.array(3)
     _, terms = compute_reward(before, after, np.array([True]), np.array([False]))
-    assert terms["completion"][0] == 20 and terms["crash"][0] == 0
+    assert terms["completion"][0] == 100 and terms["crash"][0] == 0
+
+
+def test_reward_sums_all_six_terms_and_uses_angular_speed_not_its_square():
+    before = observation()
+    after = {key: value.copy() for key, value in before.items()}
+    after["pos"][0] = 0.2
+    after["n_gates_passed"] = np.array(1)
+    after["ang_vel"] = np.array([3.0, 4.0, 0.0])
+    reward, terms = compute_reward(before, after, np.array([False]), np.array([False]))
+    assert set(terms) == {
+        "progress",
+        "gate_pass",
+        "completion",
+        "crash",
+        "angular_velocity",
+        "time",
+    }
+    progress = 15 * (np.sqrt(2) - np.linalg.norm([0.8, 0, 1]))
+    np.testing.assert_allclose(terms["angular_velocity"], [-0.05], atol=1e-7)
+    np.testing.assert_allclose(terms["time"], [-0.1], atol=1e-7)
+    np.testing.assert_allclose(reward, [progress + 10 - 0.05 - 0.1], atol=2e-6)
+    np.testing.assert_allclose(reward, sum(terms.values()), atol=2e-6)
+
+
+def test_reward_gate_events_handle_repeated_reverse_final_and_reset_counts():
+    before = {key: np.repeat(value[None], 5, axis=0) for key, value in observation().items()}
+    before["n_gates_passed"] = np.array([0, 0, 2, 3, 2])
+    after = {key: value.copy() for key, value in before.items()}
+    after["n_gates_passed"] = np.array([0, 1, 3, 3, 0])
+    # Sequence entry 2 repeats gate 0 in reverse; the official counter is authoritative.
+    reward, terms = compute_reward(
+        before, after, np.array([False, False, True, True, False]), np.zeros(5, bool)
+    )
+    np.testing.assert_array_equal(terms["gate_pass"], [0, 10, 10, 0, 0])
+    np.testing.assert_array_equal(terms["completion"], [0, 0, 100, 0, 0])
+    np.testing.assert_array_equal(terms["crash"], 0)
+    np.testing.assert_allclose(reward, [-0.1, 9.9, 109.9, -0.1, -0.1], atol=1e-5)
 
 
 def test_action_mapping_preserves_half_turn_signs_and_gimbal_lock():

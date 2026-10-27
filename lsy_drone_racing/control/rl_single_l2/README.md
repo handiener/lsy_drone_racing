@@ -118,7 +118,8 @@ environment you use with `pixi install --locked -e <environment>` after changing
 ## How It Works
 
 The official environment handles physics, Level 2 randomization, collisions and gate crossing.
-The adapter supplies observations, physical actions and training rewards to SBX.
+The adapter supplies observations and physical actions to SBX; `reward.py` computes
+the training reward.
 
 - **Observation:** 59 normalized features covering drone state, the previous command,
   race progress, the next two gates and the four nearest obstacles. Actor and critic
@@ -148,20 +149,39 @@ it does not include the reference's custom JIT/scan collector. Normalization mom
 float32 on-device, so small numerical differences from the earlier NumPy implementation
 are expected.
 
-The baseline reward per control step is:
+The six-term reward per control step is defined in `reward.py`:
 
 ```text
-2 × progress + 20 × finished − 10 × crash − 0.001 × squared_angular_speed − 0.01
+15 × progress + 10 × gate_passes + 100 × finished
+− 15 × crash − 0.01 × angular_speed_L2 − 0.10
 ```
 
-Progress measures distance reduction toward the previous target using the same observed
-gate center before and after the step. Timeouts are handled separately from crashes.
+Progress is distance reduction in meters toward the pre-step target, using the same
+pre-step observed gate center for both positions. Collision/failed-terminal steps have
+zero progress to avoid rewards from the simulator's crash-position warp.
+Gate bonuses follow increases in the official gate-sequence counter, so repeated and
+reverse gates use the official pass rules. Each pass pays a fixed +10, and the last pass
+also pays +100 for completion. Angular speed uses the L2 norm in rad/s, not its square.
+Timeouts have no extra crash penalty; the time cost applies every step.
+
+Progress, time and angular-speed coefficients follow the
+[reference SBX entry](https://github.com/ang-weilun/lsy_drone_racing/blob/fa2c4f63c37f26b2dcbb6898ad805b7d1bd31cd1/lsy_drone_racing/control/rl_sbx/train.py#L119-L153);
+finish/crash coefficients follow its
+[reward configuration](https://github.com/ang-weilun/lsy_drone_racing/blob/fa2c4f63c37f26b2dcbb6898ad805b7d1bd31cd1/lsy_drone_racing/control/rl_song/config.py#L578-L669).
+The gate bonus is explicitly included here (the reference computes it but omits it
+from the final sum in `reward.py`).
+Guidance fields, obstacle/frame barriers and action-smoothness penalties are omitted.
 Curriculum training, intermediate starts and success-state caching are not included.
+
+To compare this reward against the earlier five-term run, use the Quick Start command
+to start a **new run**. Its configuration and checkpoints record all six coefficients;
+the earlier training outputs are preserved.
 
 | Files | Responsibility |
 | --- | --- |
 | `train.py` | CLI, effective configuration, output paths and training startup |
-| `env_wrapper.py` | Simulator adapter, observations, actions, rewards and normalization |
+| `env_wrapper.py` | Simulator adapter, observations, actions, normalization and reward integration |
+| `reward.py` | Six reward coefficients and the JAX reward/component calculation |
 | `policy.py` | Actor/Critic networks, the Gaussian distribution and the SBX policy binding |
 | `callbacks.py`, `checkpoint.py` | Metrics, evaluation, checkpoint timing, saving/loading and export |
 | `controller.py`, `../rl_single_level2_controller.py` | Actor inference and the official loader entry point |
@@ -225,6 +245,8 @@ Both modes create a new run directory. Physical simulator states are not saved, 
 episodes restart on resume; continuation is not step-for-step identical.
 Checkpoints contain `model.zip`, `runtime.pkl`, `actor.msgpack` and `metadata.json`.
 Loading checks the network and environment settings.
+Checkpoints from the earlier five-term reward cannot be resumed under this six-term
+definition; they can still be exported or used for an explicit `warm_start` experiment.
 Only load native SBX/pickle checkpoints from trusted training runs.
 
 ## Export and Run the Competition Controller
