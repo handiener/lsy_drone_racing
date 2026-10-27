@@ -1,287 +1,161 @@
-"""
-记录、检查、定期触发保存
-第一版保留下面几项就够了：
-功能	具体记录／执行什么
-Episode 统计	成功率、成功用时、过门进度、撞毁率、超时率、episode 回报
-训练指标	Actor／Critic loss、熵、KL、clip fraction、学习率、采样速度；优先复用 SBX logger
-归一化更新	如果采用冠军的运行统计方案，在约定的 rollout 边界更新；推理时冻结
-定期 checkpoint	按累计环境步数触发，调用 checkpoint.py
-定期评估，可稍后加入	独立环境、固定种子、确定性动作、冻结归一化，用于比较模型
-建议特别记录 动作均值和标准差的统计值，因为你增加了标准差 head，可以观察探索是否过大或过早消失。
-不必每一步向磁盘写日志，按 episode 或 rollout 汇总即可。并行训练中的保存间隔应以累计环境步数计数，避免把一次批量 step() 错当成一步。
-职责边界：callback 决定“什么时候保存”，checkpoint 模块负责“保存什么、怎样恢复”。
+"""Rollout statistics, frozen-stat evaluation and post-update checkpoint timing."""
 
-"""
+from __future__ import annotations
 
+from collections import deque
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
+import jax.numpy as jnp
+import numpy as np
+from stable_baselines3.common.callbacks import BaseCallback
 
+from lsy_drone_racing.control.rl_single_l2.checkpoint import save_checkpoint
 
-#reference code:
-# """SBX callbacks for the rl_sbx stack.
-
-# ``NormalizerUpdateCallback`` runs the Welford running-stat updates on the
-# env's two ``NormalizerState`` instances at each ``_on_rollout_end``. Updates
-# are independent — actor and critic normalizers are NEVER cross-pollinated.
-
-# ``PeriodicCheckpointCallback`` writes a ``save_step`` checkpoint every
-# ``save_freq_steps`` env steps so post-hoc selection works on long runs
-# (handoff note: "final step overtrains" on >100M cold-trains).
-
-# The rollout buffer stores normalized obs (the env wrapper normalizes before
-# returning). We invert the affine normalization to recover raw values, then
-# run ``update_normalizer`` on the raw batch. This mirrors
-# ``RLSongVecEnv.update_normalizer_from_batch``.
-# """
-
-# from __future__ import annotations
-
-# from pathlib import Path
-
-# import jax.numpy as jnp
-# import numpy as np
-# from stable_baselines3.common.callbacks import BaseCallback
-
-# from lsy_drone_racing.control.rl_sbx.checkpoint import save_step
-# from lsy_drone_racing.control.rl_song.config import ACTOR_OBS_DIM
-# from lsy_drone_racing.control.rl_song.obs import NORM_VAR_EPS, NormalizerState, update_normalizer
-
-# # Flat-concat obs layout (see ``RLSBXVecEnv._build_obs``):
-# #   [0 : ACTOR_OBS_DIM)            → masked actor obs
-# #   [ACTOR_OBS_DIM : 2*ACTOR_OBS_DIM) → privileged critic obs
-# ACTOR_SLICE = slice(0, ACTOR_OBS_DIM)
-# CRITIC_SLICE = slice(ACTOR_OBS_DIM, 2 * ACTOR_OBS_DIM)
+if TYPE_CHECKING:
+    from lsy_drone_racing.control.rl_single_l2.env_wrapper import Level2SBXEnv
 
 
-# def _find_underlying_env(env: object) -> object:
-#     """Drill through ``VecEnv`` wrappers to find the ``RLSBXVecEnv``.
-
-#     Parameters:
-#     ----------
-#     env : object
-#         The initial env (typically ``BaseCallback.training_env``), which may
-#         be wrapped in ``VecMonitor``, ``VecNormalize``, etc.
-
-#     Returns:
-#     -------
-#     object
-#         The first env in the wrapper chain exposing ``actor_normalizer``.
-
-#     Raises:
-#     ------
-#     RuntimeError
-#         If no env in the chain exposes ``actor_normalizer``.
-#     """
-#     while not hasattr(env, "actor_normalizer"):
-#         if hasattr(env, "venv"):
-#             env = env.venv
-#         elif hasattr(env, "env"):
-#             env = env.env
-#         else:
-#             raise RuntimeError("Could not find RLSBXVecEnv under training_env wrappers.")
-#     return env
+def evaluate_policy(model: Any, env: Level2SBXEnv, episodes: int, seed: int) -> dict[str, float]:
+    """Evaluate on the same independent seeds each time, with deterministic actions."""
+    if env.num_envs != 1 or episodes < 1:
+        raise ValueError("Evaluation needs one world and a positive episode count")
+    results = []
+    for episode in range(episodes):
+        env.seed(seed + episode)
+        obs = env.reset()
+        for _ in range(env.max_episode_steps):
+            actions, _ = model.predict(obs, deterministic=True)
+            obs, _, done, infos = env.step(actions)
+            if done[0]:
+                results.append(infos[0])
+                break
+    success_times = [row["success_time"] for row in results if row["finished"]]
+    return {
+        "success_rate": float(np.mean([row["finished"] for row in results])),
+        "gate_progress": float(np.mean([row["gate_progress"] for row in results])),
+        "crash_rate": float(np.mean([row["crash"] for row in results])),
+        "timeout_rate": float(np.mean([row["timeout"] for row in results])),
+        "episode_return": float(np.mean([row["episode"]["r"] for row in results])),
+        "success_time": float(np.mean(success_times)) if success_times else 0.0,
+    }
 
 
-# class NormalizerUpdateCallback(BaseCallback):
-#     """Welford-update both normalizers after each rollout buffer fill.
+class TrainingCallback(BaseCallback):
+    """Keep sampling/update statistics consistent and save only completed PPO updates.
 
-#     The rollout buffer at ``_on_rollout_end`` contains ``n_steps * n_envs``
-#     samples of shape ``(2*ACTOR_OBS_DIM,)`` that have already been normalized
-#     by the env wrapper. We split each sample into actor / critic halves,
-#     invert the affine ``(x - mean) / sqrt(var + eps)`` to recover raw values,
-#     and feed each half to its respective ``NormalizerState`` independently.
+    SBX calls rollout_end *before* optimizing. Pending raw moments are therefore
+    merged at the next rollout_start, where the previous optimizer update has
+    finished. The model's cached last observation is re-encoded at that boundary.
+    """
 
-#     Parameters:
-#     ----------
-#     verbose : int, optional
-#         SB3 verbosity, propagated to ``BaseCallback``.
+    def __init__(
+        self,
+        env: Level2SBXEnv,
+        checkpoint_dir: Path,
+        config: dict[str, Any],
+        save_freq: int = 20_000_000,
+        keep: int = 3,
+        eval_env: Level2SBXEnv | None = None,
+        eval_freq: int = 0,
+        eval_episodes: int = 5,
+        eval_seed: int = 10_000,
+    ) -> None:
+        """Receive paths from train.py; frequencies count total environment transitions."""
+        super().__init__()
+        self.env = env
+        self.checkpoint_dir = Path(checkpoint_dir)
+        self.config = config
+        self.save_freq, self.keep = save_freq, keep
+        self.eval_env, self.eval_freq = eval_env, eval_freq
+        self.eval_episodes, self.eval_seed = eval_episodes, eval_seed
+        self.episodes: deque = deque(maxlen=1000)
+        self.last_save = self.last_eval = 0
+        self.best_score = (-1.0, -1.0, -float("inf"))
+        self.last_checkpoint: Path | None = None
 
-#     Notes:
-#     -----
-#     Inversion is exact (no information loss): the env wrapper normalizes with
-#     the stats valid at the start of the rollout, and those same stats live on
-#     the env object until this callback fires.
-#     """
+    def _on_training_start(self) -> None:
+        state = getattr(self.model, "l2_callback_state", {})
+        self.last_save = state.get("last_save", self.model.num_timesteps)
+        self.last_eval = state.get("last_eval", self.model.num_timesteps)
+        if state.get("best_score") is not None:
+            self.best_score = tuple(state["best_score"])
 
-#     def __init__(self, verbose: int = 0) -> None:
-#         """Initialize the callback. See class docstring for parameter details."""
-#         super().__init__(verbose)
+    def _state(self) -> None:
+        self.model.l2_callback_state = {
+            "last_save": self.last_save,
+            "last_eval": self.last_eval,
+            "best_score": list(self.best_score) if self.best_score[0] >= 0 else None,
+        }
 
-#     def _on_step(self) -> bool:
-#         return True
+    def _save(self) -> None:
+        self.last_save = self.model.num_timesteps
+        self._state()
+        self.last_checkpoint = save_checkpoint(
+            self.checkpoint_dir, self.model, self.env, self.config, keep=self.keep
+        )
 
-#     def _on_rollout_end(self) -> None:
-#         """Update both ``NormalizerState`` instances from the rollout buffer."""
-#         env = _find_underlying_env(self.training_env)
-#         rollout_buffer = self.model.rollout_buffer
-#         observations = rollout_buffer.observations
-#         if observations is None:
-#             raise RuntimeError("rollout_buffer.observations is None at _on_rollout_end.")
-#         # Flatten (n_steps, n_envs, obs_dim) → (n_steps * n_envs, obs_dim).
-#         flat_obs = np.asarray(observations).reshape(-1, observations.shape[-1])
-#         actor_normalized = flat_obs[:, ACTOR_SLICE]
-#         critic_normalized = flat_obs[:, CRITIC_SLICE]
+    def _evaluate(self) -> None:
+        if self.eval_env is None:
+            return
+        self.eval_env.set_normalizer(self.env.normalizer)
+        metrics = evaluate_policy(self.model, self.eval_env, self.eval_episodes, self.eval_seed)
+        self.last_eval = self.model.num_timesteps
+        for key, value in metrics.items():
+            self.logger.record(f"eval/{key}", value)
+        score = (metrics["success_rate"], metrics["gate_progress"], -metrics["success_time"])
+        if score > self.best_score:
+            self.best_score = score
+            self._state()
+            best = save_checkpoint(
+                self.checkpoint_dir / "best", self.model, self.env, self.config, keep=1
+            )
+            self.logger.record("eval/best_checkpoint", str(best), exclude="tensorboard")
+        self._state()
 
-#         # v126: single-normalizer ablation. Both halves of the flat-concat obs
-#         # are normalized against the same Welford state (``actor_normalizer``
-#         # is the canonical state; ``critic_normalizer`` is an alias). Update
-#         # statistics from the actor batch only — this matches rl_song's
-#         # reference behaviour where ``rollout.scan_rollout`` runs the Welford
-#         # update from a single sample stream. The critic-side raw values
-#         # (privileged gate positions) cover a subset of the actor's masked
-#         # values (nominal default → revealed truth as sensor range fires), so
-#         # adding them as a second update would double-count the post-reveal
-#         # samples in the running mean/var. ``set_actor_normalizer`` rebinds
-#         # both attributes; the explicit ``set_critic_normalizer`` call is
-#         # unnecessary but kept for clarity at the assignment site.
-#         actor_raw = self._invert(actor_normalized, env.actor_normalizer)
-#         _ = critic_normalized  # privileged values intentionally not folded in
-#         new_norm = update_normalizer(env.actor_normalizer, jnp.asarray(actor_raw))
-#         env.set_actor_normalizer(new_norm)
+    def _on_rollout_start(self) -> None:
+        self.env.update_normalizer()
+        self.model._last_obs = self.env.get_observation()
+        # At this point the previous rollout has been fully optimized.
+        if self.eval_freq and self.model.num_timesteps - self.last_eval >= self.eval_freq:
+            self._evaluate()
+        if self.save_freq and self.model.num_timesteps - self.last_save >= self.save_freq:
+            self._save()
 
-#     @staticmethod
-#     def _invert(normalized: np.ndarray, state: NormalizerState) -> np.ndarray:
-#         """Recover raw obs values from post-normalization obs.
+    def _on_step(self) -> bool:
+        # The environment aggregates metrics on-device; no per-world Python scan.
+        return True
 
-#         Parameters:
-#         ----------
-#         normalized : ndarray, shape (n_samples, obs_dim)
-#             Observations as stored in the rollout buffer.
-#         state : NormalizerState
-#             The normalizer state in effect during the rollout.
+    def _on_rollout_end(self) -> None:
+        reward_means, episodes = self.env.drain_metrics()
+        self.episodes.extend(episodes)
+        for key, value in reward_means.items():
+            self.logger.record(f"reward/{key}", value)
+        if self.episodes:
+            for metric in ("finished", "crash", "timeout", "gate_progress"):
+                self.logger.record(
+                    f"episodes/{metric}", np.mean([row[metric] for row in self.episodes])
+                )
+            times = [row["success_time"] for row in self.episodes if row["finished"]]
+            if times:
+                self.logger.record("episodes/success_time", np.mean(times))
+        buffer = self.model.rollout_buffer.observations
+        sample = buffer.reshape(-1, self.env.observation_config.size)
+        sample = sample[:: max(1, len(sample) // 1024)][:1024]
+        dist = self.model.policy.actor.apply(
+            self.model.policy.actor_state.params, jnp.asarray(sample)
+        )
+        mean, std = np.asarray(dist.mean()), np.asarray(dist.stddev())
+        for index, label in enumerate(("thrust", "rotation_x", "rotation_y", "rotation_z")):
+            self.logger.record(f"actions/{label}_mean", float(mean[:, index].mean()))
+            self.logger.record(f"actions/{label}_std", float(std[:, index].mean()))
+        self.logger.record("normalizer/count", self.env.normalizer.count)
 
-#         Returns:
-#         -------
-#         raw : ndarray, shape (n_samples, obs_dim)
-#             Raw obs values, recovered via ``z * sqrt(var + eps) + mean``.
-
-#         Notes:
-#         -----
-#         The forward map is ``normalize(x) = (x - mean) / sqrt(var + eps)``;
-#         this is its exact inverse.
-#         """
-#         std = np.sqrt(np.asarray(state.var) + NORM_VAR_EPS)
-#         mean = np.asarray(state.mean)
-#         return normalized * std + mean
-
-
-# class EntropyAnnealCallback(BaseCallback):
-#     """Linearly anneal ``model.ent_coef`` from start to final over training.
-
-#     SBX's PPO accepts ``ent_coef`` as a float at construction and never
-#     schedules it. The v77 cold-train recipe used ent_coef 0.005 -> 0.001
-#     annealed linearly with timesteps -- a stronger commit-pressure
-#     schedule than v112's constant 0.005. Restore that on the SBX stack.
-
-#     Parameters:
-#     ----------
-#     ent_coef_start : float
-#         Initial entropy coefficient (also the model's construction-time
-#         value; this callback overwrites it at the first rollout end).
-#     ent_coef_final : float
-#         Final entropy coefficient at ``total_timesteps``.
-#     total_timesteps : int
-#         Schedule horizon; should match ``model.learn(total_timesteps=...)``.
-#     verbose : int, optional
-#         SB3 verbosity, propagated to ``BaseCallback``.
-
-#     Notes:
-#     -----
-#     The schedule is linear in env steps (not iterations), so the
-#     instantaneous value at step ``t`` is ``start + (final - start) *
-#     min(1, t / total)``. After ``total`` the value clamps at ``final``.
-#     """
-
-#     def __init__(
-#         self,
-#         ent_coef_start: float,
-#         ent_coef_final: float,
-#         total_timesteps: int,
-#         verbose: int = 0,
-#     ) -> None:
-#         """Initialize the callback. See class docstring for parameter details."""
-#         super().__init__(verbose)
-#         self.ent_coef_start = float(ent_coef_start)
-#         self.ent_coef_final = float(ent_coef_final)
-#         self.total_timesteps = int(total_timesteps)
-
-#     def _on_step(self) -> bool:
-#         return True
-
-#     def _on_rollout_end(self) -> None:
-#         """Update ``model.ent_coef`` per the linear schedule."""
-#         t = int(self.model.num_timesteps)
-#         frac = min(1.0, t / max(1, self.total_timesteps))
-#         new_ent = self.ent_coef_start + (self.ent_coef_final - self.ent_coef_start) * frac
-#         # ``sbx.PPO`` reads ``self.ent_coef`` per ``_one_update`` call inside
-#         # the JIT, so updating the Python attribute is sufficient -- the next
-#         # iteration's update will close over the new value.
-#         self.model.ent_coef = float(new_ent)
-
-
-# class PeriodicCheckpointCallback(BaseCallback):
-#     """Write a ``save_step`` checkpoint every ``save_freq_steps`` env steps.
-
-#     Enables post-hoc checkpoint selection on cold-trains and warm-starts
-#     longer than ~100 M steps. The 2026-05-25 handoff documented that the
-#     final step of v56 / v77 over-trained; the working checkpoint was one
-#     earlier ``step_NNN``. The previous ``rl_sbx/train.py`` only saved the
-#     final step, blocking that selection — fixed by this callback.
-
-#     Parameters:
-#     ----------
-#     run_dir : Path
-#         Existing run directory; per-step subdirs created under it.
-#     alpha_max_rad : float
-#         Forwarded to :func:`save_step` so eval can reconstruct the policy
-#         with the same tangent-space rotation budget used at training.
-#     save_freq_steps : int
-#         Number of *env steps* between saves (not gradient updates). The
-#         callback fires on ``_on_rollout_end`` (once per PPO iteration), so
-#         the effective cadence is rounded up to the nearest iteration
-#         boundary. At ``n_envs=16384 × n_steps=256`` that's ~4.19 M per
-#         iteration, so a request of 10 M saves every 3rd iter.
-#     verbose : int, optional
-#         SB3 verbosity, propagated to ``BaseCallback``.
-
-#     Notes:
-#     -----
-#     The callback never deletes checkpoints — disk grows linearly with run
-#     length. A 155 M cold-train at ``save_freq_steps=20_000_000`` produces
-#     ~8 step-dirs; each is ~1 MB so this is negligible vs the wandb run.
-#     """
-
-#     def __init__(
-#         self,
-#         run_dir: Path,
-#         alpha_max_rad: float,
-#         save_freq_steps: int = 20_000_000,
-#         verbose: int = 0,
-#     ) -> None:
-#         """Initialize the callback. See class docstring for parameter details."""
-#         super().__init__(verbose)
-#         self.run_dir = run_dir
-#         self.alpha_max_rad = float(alpha_max_rad)
-#         self.save_freq_steps = int(save_freq_steps)
-#         self._last_save_step: int = 0
-
-#     def _on_step(self) -> bool:
-#         return True
-
-#     def _on_rollout_end(self) -> None:
-#         """Save a checkpoint if the cumulative timestep crossed the cadence."""
-#         current = int(self.model.num_timesteps)
-#         if current - self._last_save_step < self.save_freq_steps:
-#             return
-#         env = _find_underlying_env(self.training_env)
-#         step_dir = save_step(
-#             run_dir=self.run_dir,
-#             global_step=current,
-#             actor_params=self.model.policy.actor_state.params,
-#             critic_params=self.model.policy.vf_state.params,
-#             actor_normalizer=env.actor_normalizer,
-#             critic_normalizer=env.critic_normalizer,
-#             tangent_alpha_max_rad=self.alpha_max_rad,
-#         )
-#         self._last_save_step = current
-#         if self.verbose:
-#             print(f"[checkpoint] step {current} -> {step_dir}", flush=True)
+    def _on_training_end(self) -> None:
+        # Final update just finished; save its original frozen moments and pending
+        # moments together. Resume commits the pending batch at the next start.
+        if self.eval_env is not None and self.last_eval != self.model.num_timesteps:
+            self._evaluate()
+        if self.last_checkpoint is None or self.last_save != self.model.num_timesteps:
+            self._save()
+        self.logger.dump(step=self.model.num_timesteps)

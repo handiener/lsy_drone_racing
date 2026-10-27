@@ -31,8 +31,17 @@ dependencies = [
     "packaging >= 24.0",
     "crazyflow >= 0.4",
     "mujoco>=3.3.0,<3.11.0", # unlock the mujoco version when gymnasium side is repaired
-    "jax >= 0.7",
+    "jax >= 0.7, < 0.12",
     "warp-lang",
+    # PPO training and competition controller dependencies (available in default and gpu).
+    "torch == 2.8.0",
+    "wandb",
+    "sbx-rl == 0.28.0",
+    "stable-baselines3 >= 2.9.0, < 3",
+    "flax >= 0.12.0, < 0.13",
+    "optax >= 0.2.5, < 0.3",
+    "tfp-nightly >= 0.26.0.dev20250831",
+    "scipy >= 1.14",
 ]
 
 [project.optional-dependencies]
@@ -43,8 +52,9 @@ deploy = [
     "cflib2 @ git+https://github.com/bitcraze/crazyflie-lib-python-v2.git@d87b796",
     "drone-estimators>=0.1.0",
 ]
-# option[rl]: train rl policy
-rl = ["torch == 2.8.0", "wandb"]
+# Compatibility extra for the official .[rl] install and existing test environments.
+# PPO dependencies are included in the base project dependencies above.
+rl = []
 # option[gamepad]: use a gamepad as input for your drone
 gamepad = ["pygame"]
 
@@ -52,7 +62,10 @@ gamepad = ["pygame"]
 find = {}
 
 [tool.setuptools.package-data]
-lsy_drone_racing = ["envs/assets/*.xml", "envs/assets/*.png"]
+lsy_drone_racing = [
+    "envs/assets/*.xml", "envs/assets/*.png",
+    "control/rl_single_l2/deploy_model/*",
+]
 
 [tool.pytest.ini_options]
 markers = ["unit", "integration"]

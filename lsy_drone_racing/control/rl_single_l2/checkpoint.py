@@ -1,270 +1,187 @@
-"""
-保存与恢复完整训练状态
-希望方便 resume，就不要只保存 Actor 权重。需要区分两种用途：
-类型	应保存什么
-推理模型	Actor 参数、观测归一化统计、网络／观测／动作转换配置
-训练 checkpoint	上述内容，加 Critic、双方优化器状态、累计步数、训练调度进度和随机数状态
-此外，保存：
-•	配置及格式版本。
-•	当前代码提交、关键依赖版本。
-•	网络输入维度、动作维度、标准差方案等兼容性信息。
-•	归一化统计的均值、方差和计数。
-具体参数和优化器的序列化，优先使用所选 SBX 版本支持的机制，我们的代码负责补齐环境统计、配置等信息，并验证恢复结果。
-保存方式建议是：
-先写临时 checkpoint → 写入完成 → 原子替换
-保留最近几个版本 + 独立的最佳评估模型
-恢复时提供两个明确模式：
-•	resume：恢复权重、优化器、统计量、步数和相关调度，继续同一次训练。
-•	warm_start：加载已有网络和统计量，开启一次新训练；优化器、计数按新实验初始化。
-如果不保存并行环境的物理状态，可以在恢复时重新开始 episode，仍然能继续训练；但不能称为逐步完全一致的断点续跑。
+"""Atomic SBX checkpoints and actor-only competition exports.
 
+Resume restarts physical episodes: simulator state is intentionally not serialized.
+Only load model.zip/runtime.pkl from trusted local training runs (Python pickle).
 """
 
+from __future__ import annotations
+
+import json
+import os
+import pickle
+import random
+import shutil
+import tempfile
+from pathlib import Path
+from typing import Any
+
+import jax
+import numpy as np
+from flax import serialization
 
 
+def read_metadata(checkpoint_dir: str | Path) -> dict[str, Any]:
+    """Read checkpoint metadata and verify that all required files are present."""
+    path = Path(checkpoint_dir).expanduser().resolve()
+    metadata = json.loads((path / "metadata.json").read_text())
+    for name in ("model.zip", "runtime.pkl", "actor.msgpack"):
+        if not (path / name).is_file():
+            raise FileNotFoundError(path / name)
+    return metadata
 
 
+def save_checkpoint(
+    checkpoint_dir: str | Path, model: Any, env: Any, config: dict[str, Any], *, keep: int = 3
+) -> Path:
+    """Publish a complete step directory atomically, then prune old siblings.
 
-# reference code:
-# """Checkpoint format for the SBX stack.
+    SBX's native model stores both TrainStates (parameters and Adam moments), PPO
+    settings and counters. Runtime state supplements RNGs that native loading
+    reseeds, plus frozen/pending observation moments and callback state.
+    """
+    from lsy_drone_racing.control.rl_single_l2.policy import network_config
 
-# Files written to ``<run_dir>/step_<global_step:012d>/``:
+    if keep < 1:
+        raise ValueError("keep must be positive")
+    root = Path(checkpoint_dir).expanduser().resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    target = root / f"step_{model.num_timesteps:012d}"
+    if target.exists():
+        raise FileExistsError(f"Checkpoint already exists: {target}")
+    temporary = Path(tempfile.mkdtemp(prefix=".writing-", dir=root))
+    try:
+        model.save(temporary / "model.zip")
+        (temporary / "actor.msgpack").write_bytes(
+            serialization.to_bytes(model.policy.actor_state.params)
+        )
+        runtime = {
+            "python_rng": random.getstate(),
+            "numpy_rng": np.random.get_state(),
+            "jax_key": np.asarray(model.key),
+            "policy_key": np.asarray(model.policy.key),
+            "noise_key": np.asarray(model.policy.noise_key),
+        }
+        import torch
 
-# - ``actor.params.msgpack``  — flax-serialized actor parameters.
-# - ``critic.params.msgpack`` — flax-serialized critic parameters.
-# - ``actor_normalizer.json``  — Welford running stats for the actor obs.
-# - ``critic_normalizer.json`` — Welford running stats for the critic obs.
-# - ``policy_config.json``     — ``tangent_alpha_max_rad`` and other deploy-time
-#   scalars (mirrors the format ``rl_song.controller`` reads).
-
-# Deploy reads ONLY the ``actor.*`` files plus ``policy_config.json``. The deploy
-# loader (``load_actor_only``) explicitly fails if a caller tries to load the
-# critic from a deploy path — risk-4 mitigation per the design doc.
-# """
-
-# from __future__ import annotations
-
-# import json
-# from pathlib import Path
-# from typing import Any
-
-# import jax.numpy as jnp
-# from flax import serialization
-
-# from lsy_drone_racing.control.rl_song.obs import NormalizerState
-
-# # Sub-directory name template for a single training step's checkpoint. The
-# # zero-padded global step keeps lexical sort == temporal sort, matching the
-# # rl_song stack so existing tooling (eval scripts, latest-checkpoint helpers)
-# # can be reused without bespoke parsing.
-# _STEP_DIR_TEMPLATE: str = "step_{global_step:012d}"
-
-# # File names inside a step directory. Kept as module-level constants so the
-# # deploy fence in ``load_actor_only`` and the training resume in ``load_all``
-# # stay literally in sync.
-# _ACTOR_PARAMS_FILE: str = "actor.params.msgpack"
-# _CRITIC_PARAMS_FILE: str = "critic.params.msgpack"
-# _ACTOR_NORMALIZER_FILE: str = "actor_normalizer.json"
-# _CRITIC_NORMALIZER_FILE: str = "critic_normalizer.json"
-# _POLICY_CONFIG_FILE: str = "policy_config.json"
-
-
-# def save_step(
-#     run_dir: Path,
-#     global_step: int,
-#     actor_params: Any,
-#     critic_params: Any,
-#     actor_normalizer: NormalizerState,
-#     critic_normalizer: NormalizerState,
-#     tangent_alpha_max_rad: float,
-# ) -> Path:
-#     """Write a full step checkpoint and return the step directory.
-
-#     Parameters
-#     ----------
-#     run_dir : Path
-#         Run-level directory; the step sub-directory is created beneath it.
-#     global_step : int
-#         Training step count, zero-padded to 12 digits in the directory name so
-#         lexical sort matches temporal order.
-#     actor_params, critic_params : Any
-#         Flax parameter PyTrees from ``Actor().init(...)['params']`` and
-#         ``Critic().init(...)['params']`` in ``rl_sbx.policy``.
-#     actor_normalizer, critic_normalizer : NormalizerState
-#         Welford running statistics from ``rl_song.obs.init_normalizer``.
-#     tangent_alpha_max_rad : float
-#         Deploy-time scalar mirrored in ``policy_config.json`` so the deploy
-#         controller can recover the projection cone half-angle without
-#         re-reading the training config.
-
-#     Returns:
-#     -------
-#     Path
-#         The created step directory (``run_dir / step_<global_step:012d>``).
-#     """
-#     step_dir = Path(run_dir) / _STEP_DIR_TEMPLATE.format(global_step=global_step)
-#     step_dir.mkdir(parents=True, exist_ok=True)
-
-#     (step_dir / _ACTOR_PARAMS_FILE).write_bytes(serialization.to_bytes(actor_params))
-#     (step_dir / _CRITIC_PARAMS_FILE).write_bytes(serialization.to_bytes(critic_params))
-
-#     _save_normalizer(step_dir / _ACTOR_NORMALIZER_FILE, actor_normalizer)
-#     _save_normalizer(step_dir / _CRITIC_NORMALIZER_FILE, critic_normalizer)
-
-#     policy_config: dict[str, Any] = {"tangent_alpha_max_rad": float(tangent_alpha_max_rad)}
-#     (step_dir / _POLICY_CONFIG_FILE).write_text(
-#         json.dumps(policy_config, indent=2), encoding="utf-8"
-#     )
-
-#     return step_dir
+        runtime["torch_rng"] = torch.get_rng_state()
+        (temporary / "runtime.pkl").write_bytes(pickle.dumps(runtime))
+        metadata = {
+            "num_timesteps": model.num_timesteps,
+            "n_updates": model._n_updates,
+            "progress_remaining": model._current_progress_remaining,
+            "config": config,
+            "environment": env.get_config(),
+            "network": network_config(),
+            "normalizer": env.normalizer.state_dict(),
+            "pending_normalizer": env._pending_normalizer.state_dict(),
+            "callback_state": getattr(model, "l2_callback_state", {}),
+            "physical_state_saved": False,
+        }
+        (temporary / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
+        temporary.rename(target)
+    finally:
+        if temporary.exists():
+            shutil.rmtree(temporary)
+    for old in sorted(root.glob("step_[0-9]*"))[:-keep]:
+        if old.is_dir():
+            shutil.rmtree(old)
+    return target
 
 
-# def load_actor_only(step_dir: Path) -> dict[str, Any]:
-#     """Load actor params + actor normalizer + policy config for deploy.
+def load_checkpoint(
+    checkpoint_dir: str | Path,
+    env: Any,
+    *,
+    mode: str = "resume",
+    ppo_kwargs: dict[str, Any] | None = None,
+) -> Any:
+    """Restore a run or copy its networks into freshly initialized optimizers."""
+    from sbx import PPO
 
-#     Parameters
-#     ----------
-#     step_dir : Path
-#         Step directory previously written by :func:`save_step`.
+    from lsy_drone_racing.control.rl_single_l2.policy import Level2Policy, network_config
 
-#     Returns:
-#     -------
-#     dict[str, Any]
-#         Mapping with keys ``"actor_params"`` (nested dict from
-#         ``flax.serialization.msgpack_restore``), ``"actor_normalizer"``
-#         (``NormalizerState``), and ``"tangent_alpha_max_rad"`` (float). The
-#         ``actor_params`` value is applied at the call site via
-#         ``actor.apply({"params": loaded_dict}, obs)`` — no flax template
-#         required.
+    if mode not in {"resume", "warm_start"}:
+        raise ValueError("mode must be resume or warm_start")
+    path = Path(checkpoint_dir).expanduser().resolve()
+    metadata = read_metadata(path)
+    if metadata["network"] != network_config():
+        raise ValueError("Checkpoint network/std configuration is incompatible")
+    current = env.get_config()
+    keys = (
+        "observation",
+        "action",
+        "thrust_min",
+        "thrust_max",
+        "observation_dim",
+        "action_dim",
+        "freq",
+    )
+    if mode == "resume":
+        keys += ("reward", "max_episode_steps", "race_config")
+    for key in keys:
+        if metadata["environment"][key] != current[key]:
+            raise ValueError(f"Checkpoint environment setting differs: {key}")
+    model = PPO.load(path / "model.zip", env=env, device="cpu", force_reset=True)
+    if mode == "warm_start":
+        fresh = PPO(Level2Policy, env, **(ppo_kwargs or metadata["config"]["ppo"]))
+        fresh.policy.actor_state = fresh.policy.actor_state.replace(
+            params=model.policy.actor_state.params
+        )
+        fresh.policy.vf_state = fresh.policy.vf_state.replace(params=model.policy.vf_state.params)
+        model = fresh
+    else:
+        runtime = pickle.loads((path / "runtime.pkl").read_bytes())
+        model.key = jax.numpy.asarray(runtime["jax_key"])
+        model.policy.key = jax.numpy.asarray(runtime["policy_key"])
+        model.policy.noise_key = jax.numpy.asarray(runtime["noise_key"])
+        random.setstate(runtime["python_rng"])
+        np.random.set_state(runtime["numpy_rng"])
+        import torch
 
-#     Raises:
-#     ------
-#     FileNotFoundError
-#         If ``step_dir`` itself or any of the actor-side files
-#         (``actor.params.msgpack``, ``actor_normalizer.json``,
-#         ``policy_config.json``) is missing.
-
-#     Notes:
-#     -----
-#     Risk-4 mitigation: the deploy controller cannot construct the critic
-#     observation (no privileged ground-truth gate/obstacle poses on hardware),
-#     so the loader is structurally fenced off from any ``critic.*`` file. The
-#     fence is enforced by code (this function never references the critic
-#     file-name constants) rather than by discipline alone.
-#     """
-#     step_dir = Path(step_dir)
-#     if not step_dir.is_dir():
-#         raise FileNotFoundError(f"Step directory does not exist: {step_dir}")
-
-#     actor_params_path = step_dir / _ACTOR_PARAMS_FILE
-#     actor_normalizer_path = step_dir / _ACTOR_NORMALIZER_FILE
-#     policy_config_path = step_dir / _POLICY_CONFIG_FILE
-#     for required in (actor_params_path, actor_normalizer_path, policy_config_path):
-#         if not required.is_file():
-#             raise FileNotFoundError(f"Required deploy file missing: {required}")
-
-#     actor_params = serialization.msgpack_restore(actor_params_path.read_bytes())
-#     actor_normalizer = _load_normalizer(actor_normalizer_path)
-#     policy_config = json.loads(policy_config_path.read_text(encoding="utf-8"))
-
-#     return {
-#         "actor_params": actor_params,
-#         "actor_normalizer": actor_normalizer,
-#         "tangent_alpha_max_rad": float(policy_config["tangent_alpha_max_rad"]),
-#     }
-
-
-# def load_all(step_dir: Path, actor_template: Any, critic_template: Any) -> dict[str, Any]:
-#     """Load actor + critic params + both normalizers for training resume.
-
-#     Parameters
-#     ----------
-#     step_dir : Path
-#         Step directory previously written by :func:`save_step`.
-#     actor_template, critic_template : Any
-#         Flax parameter PyTrees with the expected structure (typically
-#         ``Actor().init(...)['params']`` and ``Critic().init(...)['params']``).
-#         Passed to ``flax.serialization.from_bytes`` so the restored leaves
-#         keep their concrete array types.
-
-#     Returns:
-#     -------
-#     dict[str, Any]
-#         Mapping with keys ``"actor_params"``, ``"critic_params"``,
-#         ``"actor_normalizer"``, ``"critic_normalizer"``, and
-#         ``"tangent_alpha_max_rad"``.
-
-#     Raises:
-#     ------
-#     FileNotFoundError
-#         If ``step_dir`` or any of the expected files is missing.
-#     """
-#     step_dir = Path(step_dir)
-#     if not step_dir.is_dir():
-#         raise FileNotFoundError(f"Step directory does not exist: {step_dir}")
-
-#     paths = {
-#         "actor_params": step_dir / _ACTOR_PARAMS_FILE,
-#         "critic_params": step_dir / _CRITIC_PARAMS_FILE,
-#         "actor_normalizer": step_dir / _ACTOR_NORMALIZER_FILE,
-#         "critic_normalizer": step_dir / _CRITIC_NORMALIZER_FILE,
-#         "policy_config": step_dir / _POLICY_CONFIG_FILE,
-#     }
-#     for name, path in paths.items():
-#         if not path.is_file():
-#             raise FileNotFoundError(f"Required file missing ({name}): {path}")
-
-#     actor_params = serialization.from_bytes(actor_template, paths["actor_params"].read_bytes())
-#     critic_params = serialization.from_bytes(critic_template, paths["critic_params"].read_bytes())
-#     actor_normalizer = _load_normalizer(paths["actor_normalizer"])
-#     critic_normalizer = _load_normalizer(paths["critic_normalizer"])
-#     policy_config = json.loads(paths["policy_config"].read_text(encoding="utf-8"))
-
-#     return {
-#         "actor_params": actor_params,
-#         "critic_params": critic_params,
-#         "actor_normalizer": actor_normalizer,
-#         "critic_normalizer": critic_normalizer,
-#         "tangent_alpha_max_rad": float(policy_config["tangent_alpha_max_rad"]),
-#     }
+        torch.set_rng_state(runtime["torch_rng"])
+        model.l2_callback_state = metadata["callback_state"]
+        if (
+            model.num_timesteps != metadata["num_timesteps"]
+            or model._n_updates != metadata["n_updates"]
+        ):
+            raise ValueError("Native SBX restore did not preserve training counters")
+        env.restore_pending_normalizer(metadata["pending_normalizer"])
+    env.set_normalizer(metadata["normalizer"])
+    return model
 
 
-# def _save_normalizer(path: Path, state: NormalizerState) -> None:
-#     """Serialize a :class:`NormalizerState` to JSON.
+def export_actor(checkpoint: str, destination: str | None = None) -> str:
+    """Export actor parameters, frozen moments and JSON configs, without a critic.
 
-#     Parameters
-#     ----------
-#     path : Path
-#         Output JSON file.
-#     state : NormalizerState
-#         Welford running statistics with jnp.array ``mean``/``var`` and a
-#         scalar ``count``.
-#     """
-#     payload = {
-#         "mean": jnp.asarray(state.mean).tolist(),
-#         "var": jnp.asarray(state.var).tolist(),
-#         "count": float(jnp.asarray(state.count)),
-#     }
-#     path.write_text(json.dumps(payload), encoding="utf-8")
+    Run with ``python -m lsy_drone_racing.control.rl_single_l2.checkpoint
+    --checkpoint=... --destination=...``. Existing exports are preserved; choose
+    a new destination to compare submissions.
+    """
+    path = Path(checkpoint).expanduser().resolve()
+    metadata = read_metadata(path)
+    target = (
+        Path(destination).expanduser().resolve()
+        if destination
+        else Path(__file__).resolve().parent / "deploy_model"
+    )
+    if target.exists():
+        raise FileExistsError(f"Export destination already exists: {target}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = Path(tempfile.mkdtemp(prefix=".export-", dir=target.parent))
+    try:
+        shutil.copyfile(path / "actor.msgpack", temporary / "actor.msgpack")
+        bundle = {
+            key: metadata[key] for key in ("environment", "network", "normalizer", "num_timesteps")
+        }
+        (temporary / "config.json").write_text(json.dumps(bundle, indent=2) + "\n")
+        os.rename(temporary, target)
+    finally:
+        if temporary.exists():
+            shutil.rmtree(temporary)
+    return str(target)
 
 
-# def _load_normalizer(path: Path) -> NormalizerState:
-#     """Deserialize a :class:`NormalizerState` from JSON.
+if __name__ == "__main__":
+    import fire
 
-#     Parameters
-#     ----------
-#     path : Path
-#         Input JSON file written by :func:`_save_normalizer`.
-
-#     Returns:
-#     -------
-#     NormalizerState
-#         Running statistics with float32 jnp.array fields, matching the
-#         dtype convention of :func:`rl_song.obs.init_normalizer`.
-#     """
-#     payload = json.loads(path.read_text(encoding="utf-8"))
-#     return NormalizerState(
-#         mean=jnp.asarray(payload["mean"], dtype=jnp.float32),
-#         var=jnp.asarray(payload["var"], dtype=jnp.float32),
-#         count=jnp.asarray(payload["count"], dtype=jnp.float32),
-#     )
+    fire.Fire(export_actor)

@@ -29,3 +29,7 @@ acados/
 
 # Local simulation recordings
 /runs/
+
+# Level 2 training artifacts; selected submission exports remain tracked.
+/lsy_drone_racing/control/rl_single_l2/outputs/
+!/lsy_drone_racing/control/rl_single_l2/deploy_model/*.json

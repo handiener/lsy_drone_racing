@@ -1,6 +1,19 @@
 # Simulation, Recording and Replay
 
-> **Reminder:** Install Pixi, then run `pixi install --locked -e gpu` from the repository root and activate the environment with `pixi shell -e gpu` before using these tools. Activate it in each new terminal and sync dependencies again after pulling upstream updates.
+Run commands from the **repository root**. Update and activate the simulation environment:
+
+```bash
+pixi install --locked -e default
+pixi shell -e default
+```
+
+The examples below use this shell. An existing `gpu` environment also works.
+Without activating a shell, prefix a command with `pixi run -e default`.
+
+Video recording and replay require **`ffmpeg` with the `libx264` encoder on `PATH`**
+and working EGL rendering. `ffmpeg` is an external executable, not a Python package;
+it is not currently installed by this project's Pixi manifest. Check with `ffmpeg -version`
+and install it through your system package manager if needed.
 
 ## 1. Official simulation
 
@@ -29,6 +42,8 @@ Record one complete run with six synchronized views in one video on a remote mac
 python personal_tools/record_run.py --config level0.toml \
   --controller my_controller.py
 ```
+
+### Recording artifacts
 
 The script prints its output directory under `runs/`, containing:
 
