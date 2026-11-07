@@ -21,7 +21,13 @@ from jax.scipy.spatial.transform import Rotation
 from stable_baselines3.common.vec_env import VecEnv
 
 from lsy_drone_racing.control.rl_single_l2.reset_mid_start import ResetConfig, build_segment_reset
-from lsy_drone_racing.control.rl_single_l2.reward import RewardConfig, compute_reward
+from lsy_drone_racing.control.rl_single_l2.reward import (
+    RewardConfig,
+    SparseRewardConfig,
+    compute_reward,
+    compute_sparse_reward,
+    reward_components,
+)
 
 
 @dataclass(frozen=True)
@@ -266,6 +272,26 @@ def _as_euler_xyz(rotation: Rotation) -> Array:
     return jnp.stack([roll, pitch, yaw], axis=-1)
 
 
+def _rotation_increment(raw: Array, alpha_max_rad: float) -> Array:
+    """Radially tanh-bound raw rotation components to a body-frame rotation vector."""
+    magnitude = jnp.linalg.norm(raw[:, 1:], axis=1, keepdims=True)
+    scale = jnp.tanh(magnitude) / jnp.maximum(magnitude, 1e-12)
+    return raw[:, 1:] * scale * alpha_max_rad
+
+
+@partial(jax.jit, static_argnames=("config",))
+def rotation_increment(raw_actions: Array, config: ActionConfig | None = None) -> Array:
+    """Return the per-step body-frame rotation vector that decode_action applies.
+
+    Dividing by the control period gives the implied commanded body rate, used by
+    the sparse reward's command penalty. Shape (n, 3) for batches, (3,) otherwise.
+    """
+    cfg = config or ActionConfig()
+    raw = jnp.asarray(raw_actions, dtype=jnp.float32)
+    delta = _rotation_increment(raw.reshape(-1, 4), cfg.alpha_max_rad)
+    return delta[0] if raw.ndim == 1 else delta
+
+
 @partial(jax.jit, static_argnames=("config",))
 def decode_action(
     raw_actions: Array,
@@ -291,9 +317,7 @@ def decode_action(
     orientation = jnp.asarray(quat).reshape(-1, 4)
     if orientation.shape[0] != raw.shape[0]:
         raise ValueError("Actions and orientations must have matching batches")
-    magnitude = jnp.linalg.norm(raw[:, 1:], axis=1, keepdims=True)
-    scale = jnp.tanh(magnitude) / jnp.maximum(magnitude, 1e-12)
-    delta = raw[:, 1:] * scale * cfg.alpha_max_rad
+    delta = _rotation_increment(raw, cfg.alpha_max_rad)
     desired = Rotation.from_quat(orientation) * Rotation.from_rotvec(delta)
     # The official attitude space limits all three Euler coordinates to +/- pi/2.
     angles = jnp.clip(_as_euler_xyz(desired), -jnp.pi / 2, jnp.pi / 2)
@@ -317,29 +341,63 @@ def _observe_batch(
     return (_normalize(features, mean, var, config.epsilon, config.clip), batch_mean, batch_var)
 
 
-@partial(jax.jit, static_argnames=("config",))
+def _zero_reward_stats(components: tuple[str, ...], n_envs: int) -> dict[str, Any]:
+    """Device-resident reward accumulators, drained once per rollout."""
+    return {
+        "sums": {key: jnp.zeros(()) for key in components},
+        "episode": {key: jnp.zeros(n_envs) for key in components},
+        "episode_totals": {key: jnp.zeros(()) for key in components},
+        "episodes": jnp.zeros((), dtype=jnp.int32),
+    }
+
+
+@partial(jax.jit, static_argnames=("config", "action_config", "dt"))
 def _transition_reward(
     previous: dict[str, Array],
     current: dict[str, Array],
     terminated: Array,
     truncated: Array,
-    reward_sums: dict[str, Array],
-    config: RewardConfig,
-) -> tuple[Array, Array, dict[str, Array], dict[str, Array]]:
-    """Compute reward, end flags and batch metric totals before resetting worlds."""
+    raw_actions: Array,
+    stats: dict[str, Any],
+    config: RewardConfig | SparseRewardConfig,
+    action_config: ActionConfig,
+    dt: float,
+) -> tuple[Array, Array, dict[str, Any], dict[str, Array]]:
+    """Compute reward, end flags and on-device metric totals before resetting worlds.
+
+    Besides per-transition component sums, each world's running per-episode
+    component sums are kept so completed episodes' totals (e.g. the summed sparse
+    command penalty) can be logged without per-step host transfers.
+    """
     passed = current["n_gates_passed"].reshape(-1)
     finished = passed >= current["gate_sequence"].shape[1]
     terminated = jnp.asarray(terminated, dtype=bool) | finished
     truncated = jnp.asarray(truncated, dtype=bool)
-    reward, components = compute_reward(previous, current, terminated, truncated, config)
-    totals = {key: reward_sums[key] + value.sum() for key, value in components.items()}
+    if isinstance(config, SparseRewardConfig):
+        delta = rotation_increment(raw_actions, action_config)
+        reward, components = compute_sparse_reward(
+            previous, current, terminated, truncated, delta, dt, None, config
+        )
+    else:
+        reward, components = compute_reward(previous, current, terminated, truncated, config)
+    done = terminated | truncated
+    running = {key: stats["episode"][key] + value for key, value in components.items()}
+    stats = {
+        "sums": {key: stats["sums"][key] + value.sum() for key, value in components.items()},
+        "episode": {key: jnp.where(done, 0.0, value) for key, value in running.items()},
+        "episode_totals": {
+            key: stats["episode_totals"][key] + jnp.where(done, value, 0.0).sum()
+            for key, value in running.items()
+        },
+        "episodes": stats["episodes"] + done.sum(dtype=jnp.int32),
+    }
     metrics = {
         "terminated": terminated,
         "truncated": truncated,
         "finished": finished,
         "passed": passed,
     }
-    return reward, terminated | truncated, totals, metrics
+    return reward, done, stats, metrics
 
 
 @jax.jit
@@ -360,7 +418,7 @@ class Level2SBXEnv(VecEnv):
         max_episode_steps: int = 1500,
         observation_config: ObservationConfig | None = None,
         action_config: ActionConfig | None = None,
-        reward_config: RewardConfig | None = None,
+        reward_config: RewardConfig | SparseRewardConfig | None = None,
         reset_config: ResetConfig | None = None,
     ) -> None:
         """Build an attitude-mode Level 2 simulation and initialize adapter state."""
@@ -419,7 +477,7 @@ class Level2SBXEnv(VecEnv):
         self._restored_pending: dict[str, Any] | None = None
         self._completed_episodes: deque = deque(maxlen=1000)
         self._completed_segment_episodes: deque = deque(maxlen=1000)
-        self._reward_sums = {key: jnp.zeros(()) for key in asdict(self.reward_config)}
+        self._reward_stats = _zero_reward_stats(reward_components(self.reward_config), n_envs)
         self._reward_transitions = 0
         observation_space = spaces.Box(
             -self.observation_config.clip,
@@ -470,8 +528,7 @@ class Level2SBXEnv(VecEnv):
         self._episode_lengths.fill(0)
         self._completed_episodes.clear()
         self._completed_segment_episodes.clear()
-        self._reward_sums = {key: jnp.zeros_like(value) for key, value in self._reward_sums.items()}
-        self._reward_transitions = 0
+        self._clear_reward_stats()
         self._pending_normalizer = RunningNormalizer(self.observation_config.size)
         if self._restored_pending is not None:
             self._pending_normalizer.load_state_dict(self._restored_pending)
@@ -502,17 +559,38 @@ class Level2SBXEnv(VecEnv):
             raise ValueError("Official observation produced non-finite policy features")
         return result
 
+    @property
+    def reward_mode(self) -> str:
+        """Return "sparse" or "dense" according to the configured reward."""
+        return "sparse" if isinstance(self.reward_config, SparseRewardConfig) else "dense"
+
+    def _clear_reward_stats(self) -> None:
+        self._reward_stats = _zero_reward_stats(
+            reward_components(self.reward_config), self.num_envs
+        )
+        self._reward_transitions = 0
+
     def drain_metrics(self) -> tuple[dict[str, float], list[dict[str, Any]]]:
-        """Transfer batch reward means and completed episodes once per rollout."""
-        totals = jax.device_get(self._reward_sums)
-        means = {
-            key: float(value) / max(1, self._reward_transitions) for key, value in totals.items()
-        }
+        """Transfer reward means and completed episodes once per rollout.
+
+        Keys are per-transition component means; ``episode_<component>`` keys are
+        mean per-episode component sums over episodes completed this rollout.
+        Per-episode accumulators of still-running worlds are kept.
+        """
+        stats = jax.device_get(
+            {key: self._reward_stats[key] for key in ("sums", "episode_totals", "episodes")}
+        )
+        transitions = max(1, self._reward_transitions)
+        episodes_done = max(1, int(stats["episodes"]))
+        means = {key: float(value) / transitions for key, value in stats["sums"].items()}
+        for key, value in stats["episode_totals"].items():
+            means[f"episode_{key}"] = float(value) / episodes_done
         episodes = list(self._completed_episodes) + list(self._completed_segment_episodes)
         self._completed_episodes.clear()
         self._completed_segment_episodes.clear()
-        self._reward_sums = {key: jnp.zeros_like(value) for key, value in self._reward_sums.items()}
-        self._reward_transitions = 0
+        running = self._reward_stats["episode"]
+        self._clear_reward_stats()
+        self._reward_stats["episode"] = running
         return means, episodes
 
     def get_observation(self) -> np.ndarray:
@@ -551,14 +629,23 @@ class Level2SBXEnv(VecEnv):
         if self._pending_actions is None or self._current_obs is None:
             raise RuntimeError("Call reset() and step_async() before step_wait()")
         actions, self._pending_actions = self._pending_actions, None
+        actions = jnp.asarray(actions)
         previous = self._current_obs
         commands = decode_action(
             actions, previous["quat"], self.thrust_min, self.thrust_max, self.action_config
         )
         raw, _, terminated, truncated, _ = self.jax_env.step(commands)
         current = raw
-        reward_device, done_device, self._reward_sums, metrics = _transition_reward(
-            previous, current, terminated, truncated, self._reward_sums, self.reward_config
+        reward_device, done_device, self._reward_stats, metrics = _transition_reward(
+            previous,
+            current,
+            terminated,
+            truncated,
+            actions,
+            self._reward_stats,
+            self.reward_config,
+            self.action_config,
+            1.0 / float(self.config.env.freq),
         )
         self._reward_transitions += self.num_envs
         # SBX consumes only these arrays and the final normalized observation on CPU.
@@ -619,6 +706,7 @@ class Level2SBXEnv(VecEnv):
         return {
             "observation": asdict(self.observation_config),
             "action": asdict(self.action_config),
+            "reward_mode": self.reward_mode,
             "reward": asdict(self.reward_config),
             "reset": asdict(self.reset_config),
             "thrust_min": self.thrust_min,
