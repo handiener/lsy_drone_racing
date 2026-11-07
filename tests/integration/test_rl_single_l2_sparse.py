@@ -129,3 +129,19 @@ def test_legacy_deploy_model_still_loads():
         assert np.isfinite(controller.compute_control(raw)).all()
     finally:
         env.close()
+
+
+@pytest.mark.integration
+def test_eval_paper_reports_every_episode(tmp_path: Path):
+    from lsy_drone_racing.control.rl_single_l2.eval_paper import evaluate
+
+    deploy = CONFIG.parents[1] / "lsy_drone_racing/control/rl_single_l2/deploy_model"
+    if not (deploy / "config.json").is_file():
+        pytest.skip("No committed deploy_model")
+    summary = evaluate(
+        str(deploy), episodes=3, max_episode_steps=20, csv_path=str(tmp_path / "e.csv")
+    )
+    ends = sum(summary["crashes"].values()) + summary["timeouts"]
+    assert ends + round(summary["success_rate"] * 3) == 3
+    assert summary["crashes"]["other"] == 0
+    assert len((tmp_path / "e.csv").read_text().splitlines()) == 4
