@@ -18,7 +18,7 @@ from lsy_drone_racing.control.rl_single_l2.env_wrapper import (
     decode_action,
     encode_obs,
 )
-from lsy_drone_racing.control.rl_single_l2.policy import Actor, network_from_config
+from lsy_drone_racing.control.rl_single_l2.policy import network_from_config
 
 
 class Level2RLController(Controller):
@@ -55,7 +55,7 @@ class Level2RLController(Controller):
         self.action_config = ActionConfig(**environment["action"])
         self.normalizer = RunningNormalizer(self.observation_config.size)
         self.normalizer.load_state_dict(bundle["normalizer"])
-        actor = Actor(net_arch=network.actor_arch, activation_fn=network.activation_fn)
+        actor = network.actor()
         params = serialization.msgpack_restore((model_dir / "actor.msgpack").read_bytes())
 
         def predict(observation: dict, previous_action: jax.Array) -> jax.Array:

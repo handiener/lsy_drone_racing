@@ -12,6 +12,7 @@ import pickle
 import random
 import shutil
 import tempfile
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -99,7 +100,9 @@ def load_checkpoint(
     """Restore a run or copy its networks into freshly initialized optimizers.
 
     ``network`` (a NetworkConfig) defaults to the checkpoint's own network and
-    must match it: parameters are copied layer by layer.
+    must match it: parameters are copied layer by layer. A warm start may change
+    the actor's mean bound and the action mapping (ActionConfig), which reuse the
+    same parameter shapes; a resume must match exactly.
     """
     from sbx import PPO
 
@@ -111,31 +114,27 @@ def load_checkpoint(
     metadata = read_metadata(path)
     saved_network = network_from_config(metadata["network"])
     if network is not None and network != saved_network:
-        raise ValueError("Checkpoint network differs from the requested network")
+        if mode == "resume" or network.with_mean_bound(1.0) != saved_network.with_mean_bound(1.0):
+            raise ValueError("Checkpoint network differs from the requested network")
+    target_network = saved_network if network is None else network
     current = env.get_config()
-    keys = (
-        "observation",
-        "action",
-        "thrust_min",
-        "thrust_max",
-        "observation_dim",
-        "action_dim",
-        "freq",
-    )
+    keys = ("observation", "thrust_min", "thrust_max", "observation_dim", "action_dim", "freq")
+    from lsy_drone_racing.control.rl_single_l2.env_wrapper import ActionConfig
+
     saved_env = dict(metadata["environment"])
+    # Earlier checkpoints store only alpha_max_rad; the gain defaults to it.
+    saved_env["action"] = asdict(ActionConfig(**saved_env["action"]))
     # Earlier checkpoints predate reward modes and observation layouts.
     saved_env.setdefault("reward_mode", "dense")
     saved_env["observation"] = {"layout": "current", "paper_obstacles": False} | saved_env[
         "observation"
     ]
     if mode == "resume":
-        keys += ("reward_mode", "reward", "max_episode_steps", "race_config")
+        keys += ("action", "reward_mode", "reward", "max_episode_steps", "race_config")
     for key in keys:
         if saved_env[key] != current[key]:
             raise ValueError(f"Checkpoint environment setting differs: {key}")
     if mode == "resume":
-        from dataclasses import asdict
-
         from lsy_drone_racing.control.rl_single_l2.reset_mid_start import ResetConfig
 
         # Earlier checkpoints used only official starts; absence means probability zero.
@@ -149,7 +148,7 @@ def load_checkpoint(
         fresh = PPO(
             Level2Policy,
             env,
-            policy_kwargs={"network": saved_network},
+            policy_kwargs={"network": target_network},
             **(ppo_kwargs or metadata["config"]["ppo"]),
         )
         fresh.policy.actor_state = fresh.policy.actor_state.replace(

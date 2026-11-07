@@ -34,7 +34,7 @@ from lsy_drone_racing.control.rl_single_l2.env_wrapper import (
     ObservationConfig,
     decode_action,
 )
-from lsy_drone_racing.control.rl_single_l2.policy import Actor, network_from_config
+from lsy_drone_racing.control.rl_single_l2.policy import network_from_config
 from lsy_drone_racing.control.rl_single_l2.reset_mid_start import ResetConfig
 
 DEFAULT_CONFIG = Path(__file__).resolve().parents[3] / "config" / "level2.toml"
@@ -119,7 +119,7 @@ def evaluate(
     observation = ObservationConfig(**environment["observation"])
     action = ActionConfig(**environment["action"])
     network = network_from_config(bundle["network"])
-    actor = Actor(net_arch=network.actor_arch, activation_fn=network.activation_fn)
+    actor = network.actor()
     params = bundle["params"]
     env = Level2SBXEnv(
         Path(config).expanduser() if config else DEFAULT_CONFIG,

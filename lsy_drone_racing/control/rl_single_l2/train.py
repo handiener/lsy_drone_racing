@@ -62,7 +62,10 @@ def train(
     eval_seed: int = 10_000,
     gate_lookahead: int = 2,
     obstacle_count: int = 4,
-    alpha_max_rad: float = 0.16,
+    alpha_max_rad: float = 0.30,
+    alpha_gain_rad: float | None = 0.16,
+    mean_bound: float = 3.0,
+    start_timesteps: int = 0,
     segment_init_prob: float = 0.40,
     segment_init_offset_m: float = 0.50,
     segment_init_vel_mps: float = 2.50,
@@ -107,12 +110,28 @@ def train(
     (256, 256) leaky ReLU; "paper": actor 512-512-256-128, critic
     512-512-256-256-128-128, ELU); actor_arch/critic_arch/activation override it.
 
+    Action limits: the actor mean is mean_bound * tanh(z / mean_bound) (1.0 is
+    the original tanh mean, which caps deterministic thrust at 73 % of the
+    range; 3.0 reaches 95 %). The per-step rotation saturates at alpha_max_rad
+    (rate limit alpha_max_rad * freq) with small-signal gain alpha_gain_rad
+    (None means equal to alpha_max_rad, the original mapping). A warm start may
+    change all three; parameters are reused unchanged.
+
+    start_timesteps (warm_start only) continues the step counter from a
+    lineage's cumulative steps, e.g. a 200M-step model warm-started from a
+    100M checkpoint: logging, W&B, checkpoint names and the absolute
+    total_timesteps then count from there.
+
     wandb_project enables live Weights & Biases logging of everything written to
     progress.csv (requires ``wandb login`` or WANDB_API_KEY); wandb_mode may be
     "online", "offline" or "disabled".
     """
     if mode not in {"new", "resume", "warm_start"}:
         raise ValueError("mode must be new, resume or warm_start")
+    if start_timesteps and mode != "warm_start":
+        raise ValueError("start_timesteps applies only to warm_start")
+    if start_timesteps < 0 or (start_timesteps and total_timesteps <= start_timesteps):
+        raise ValueError("total_timesteps must exceed a nonnegative start_timesteps")
     if (checkpoint is None) != (mode == "new"):
         raise ValueError("Provide a checkpoint exactly when mode is resume or warm_start")
     if device not in {"cpu", "gpu"}:
@@ -134,6 +153,7 @@ def train(
         actor_arch=preset.actor_arch if actor_arch is None else tuple(actor_arch),
         critic_arch=preset.critic_arch if critic_arch is None else tuple(critic_arch),
         activation=activation or preset.activation,
+        mean_bound=mean_bound,
     )
     observation = ObservationConfig(
         gate_lookahead=gate_lookahead,
@@ -141,7 +161,7 @@ def train(
         layout=obs_layout,
         paper_obstacles=bool(paper_obs_obstacles),
     )
-    action = ActionConfig(alpha_max_rad=alpha_max_rad)
+    action = ActionConfig(alpha_max_rad=alpha_max_rad, alpha_gain_rad=alpha_gain_rad)
     reward: RewardConfig | SparseRewardConfig = (
         SparseRewardConfig(
             gate_pass_leading=gate_pass_leading,
@@ -201,7 +221,14 @@ def train(
     if ppo_kwargs["batch_size"] < 2 or rollout_size % ppo_kwargs["batch_size"]:
         raise ValueError("batch_size must be >= 2 and divide n_envs * n_steps exactly")
     # Name the effective network (resume restores it; overrides make it custom).
-    arch = next((name for name, preset in ARCH_PRESETS.items() if preset == network), "custom")
+    arch = next(
+        (
+            name
+            for name, preset in ARCH_PRESETS.items()
+            if preset == network.with_mean_bound(preset.mean_bound)
+        ),
+        "custom",
+    )
     if run_name is None:
         # Default names record the compared settings: reward, observations, network, seed.
         tags = ["l2", "ss" if isinstance(reward, SparseRewardConfig) else "ds"]
@@ -244,6 +271,7 @@ def train(
                 "device": device,
                 "mode": mode,
                 "source_checkpoint": checkpoint,
+                "start_timesteps": start_timesteps,
                 "ppo": ppo_kwargs,
                 "environment": env.get_config(),
                 "network": network_config(network),
@@ -292,8 +320,12 @@ def train(
                 eval_episodes,
                 eval_seed,
             )
+            if start_timesteps:
+                # Continue the lineage's counter; SB3 then resets only the env.
+                model.num_timesteps = start_timesteps
             remaining = total_timesteps - model.num_timesteps
-            model.learn(remaining, callback=callback, reset_num_timesteps=(mode != "resume"))
+            continue_counter = mode == "resume" or bool(start_timesteps)
+            model.learn(remaining, callback=callback, reset_num_timesteps=not continue_counter)
             if wandb_run is not None:
                 wandb_run.summary["last_checkpoint"] = str(callback.last_checkpoint)
                 wandb_run.finish()

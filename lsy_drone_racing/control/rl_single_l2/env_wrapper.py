@@ -75,14 +75,29 @@ PAPER_BASE_SIZE = 40
 
 @dataclass(frozen=True)
 class ActionConfig:
-    """Maximum body-frame rotation increment, in radians, for one control step."""
+    """Body-frame rotation increment per control step, in radians.
+
+    The increment is ``alpha_max * tanh(|r| * gain / alpha_max)`` along the raw
+    rotation r: it saturates at alpha_max_rad and has slope alpha_gain_rad at
+    zero. The gain defaults to alpha_max_rad, the original ``alpha * tanh(|r|)``
+    mapping, so legacy metadata ({"alpha_max_rad": a}) restores unchanged.
+    Raising only alpha_max_rad widens the rate limit (alpha_max / dt) while
+    keeping a trained policy's small-signal behaviour.
+    """
 
     alpha_max_rad: float = 0.16
+    alpha_gain_rad: float | None = None
 
     def __post_init__(self) -> None:
-        """Check the rotation budget."""
+        """Check the rotation budget and fill in the default gain."""
+        if self.alpha_gain_rad is None:
+            object.__setattr__(self, "alpha_gain_rad", self.alpha_max_rad)
+        object.__setattr__(self, "alpha_max_rad", float(self.alpha_max_rad))
+        object.__setattr__(self, "alpha_gain_rad", float(self.alpha_gain_rad))
         if not 0 < self.alpha_max_rad <= np.pi:
             raise ValueError("alpha_max_rad must be in (0, pi]")
+        if not 0 < self.alpha_gain_rad <= np.pi:
+            raise ValueError("alpha_gain_rad must be in (0, pi]")
 
 
 @jax.jit
@@ -378,11 +393,13 @@ def _as_euler_xyz(rotation: Rotation) -> Array:
     return jnp.stack([roll, pitch, yaw], axis=-1)
 
 
-def _rotation_increment(raw: Array, alpha_max_rad: float) -> Array:
+def _rotation_increment(raw: Array, config: ActionConfig) -> Array:
     """Radially tanh-bound raw rotation components to a body-frame rotation vector."""
     magnitude = jnp.linalg.norm(raw[:, 1:], axis=1, keepdims=True)
-    scale = jnp.tanh(magnitude) / jnp.maximum(magnitude, 1e-12)
-    return raw[:, 1:] * scale * alpha_max_rad
+    ratio = config.alpha_gain_rad / config.alpha_max_rad
+    # Same expression as the original alpha * tanh(|r|) / |r| when ratio == 1.
+    scale = jnp.tanh(magnitude * ratio) / jnp.maximum(magnitude * ratio, 1e-12)
+    return raw[:, 1:] * scale * config.alpha_gain_rad
 
 
 @partial(jax.jit, static_argnames=("config",))
@@ -394,7 +411,7 @@ def rotation_increment(raw_actions: Array, config: ActionConfig | None = None) -
     """
     cfg = config or ActionConfig()
     raw = jnp.asarray(raw_actions, dtype=jnp.float32)
-    delta = _rotation_increment(raw.reshape(-1, 4), cfg.alpha_max_rad)
+    delta = _rotation_increment(raw.reshape(-1, 4), cfg)
     return delta[0] if raw.ndim == 1 else delta
 
 
@@ -423,7 +440,7 @@ def decode_action(
     orientation = jnp.asarray(quat).reshape(-1, 4)
     if orientation.shape[0] != raw.shape[0]:
         raise ValueError("Actions and orientations must have matching batches")
-    delta = _rotation_increment(raw, cfg.alpha_max_rad)
+    delta = _rotation_increment(raw, cfg)
     desired = Rotation.from_quat(orientation) * Rotation.from_rotvec(delta)
     # The official attitude space limits all three Euler coordinates to +/- pi/2.
     angles = jnp.clip(_as_euler_xyz(desired), -jnp.pi / 2, jnp.pi / 2)
