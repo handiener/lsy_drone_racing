@@ -82,6 +82,10 @@ def train(
     actor_arch: tuple[int, ...] | None = None,
     critic_arch: tuple[int, ...] | None = None,
     activation: str | None = None,
+    wandb_project: str | None = None,
+    wandb_entity: str | None = None,
+    wandb_group: str | None = None,
+    wandb_mode: str = "online",
 ) -> str:
     """Run PPO and return the final complete checkpoint directory.
 
@@ -102,6 +106,10 @@ def train(
     with paper_obs_obstacles. arch selects a NetworkConfig preset ("default":
     (256, 256) leaky ReLU; "paper": actor 512-512-256-128, critic
     512-512-256-256-128-128, ELU); actor_arch/critic_arch/activation override it.
+
+    wandb_project enables live Weights & Biases logging of everything written to
+    progress.csv (requires ``wandb login`` or WANDB_API_KEY); wandb_mode may be
+    "online", "offline" or "disabled".
     """
     if mode not in {"new", "resume", "warm_start"}:
         raise ValueError("mode must be new, resume or warm_start")
@@ -207,7 +215,7 @@ def train(
     log_dir, checkpoint_dir = run_dir / "logs", run_dir / "checkpoints"
     log_dir.mkdir()
     checkpoint_dir.mkdir()
-    env = eval_env = logger = None
+    env = eval_env = logger = wandb_run = None
     # JAX policy operations and simulator allocations use the selected backend.
     import jax
 
@@ -248,6 +256,23 @@ def train(
             }
             (run_dir / "config.json").write_text(json.dumps(effective, indent=2) + "\n")
             logger = configure(str(log_dir), ["stdout", "log", "csv", "json"])
+            if wandb_project:
+                from lsy_drone_racing.control.rl_single_l2.wandb_logger import (
+                    WandbOutputFormat,
+                    init_wandb,
+                )
+
+                wandb_run = init_wandb(
+                    wandb_project,
+                    run_name,
+                    effective,
+                    str(run_dir),
+                    entity=wandb_entity,
+                    group=wandb_group,
+                    tags=[env.reward_mode, f"obs-{observation.layout}", f"arch-{arch}"],
+                    mode=wandb_mode,
+                )
+                logger.output_formats.append(WandbOutputFormat(wandb_run))
             model.set_logger(logger)
             if eval_freq:
                 eval_env = Level2SBXEnv(
@@ -269,8 +294,14 @@ def train(
             )
             remaining = total_timesteps - model.num_timesteps
             model.learn(remaining, callback=callback, reset_num_timesteps=(mode != "resume"))
+            if wandb_run is not None:
+                wandb_run.summary["last_checkpoint"] = str(callback.last_checkpoint)
+                wandb_run.finish()
+                wandb_run = None
             return str(callback.last_checkpoint)
     finally:
+        if wandb_run is not None:
+            wandb_run.finish(exit_code=1)
         if eval_env is not None:
             eval_env.close()
         if env is not None:
