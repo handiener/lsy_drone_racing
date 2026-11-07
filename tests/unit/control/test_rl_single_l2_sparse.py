@@ -141,3 +141,53 @@ def test_reward_config_round_trip():
     assert reward_config_from_dict("sparse", asdict(config)) == config
     with pytest.raises(ValueError):
         reward_config_from_dict("other", {})
+
+
+def paper_config(obstacles: bool = False) -> Any:
+    from lsy_drone_racing.control.rl_single_l2.env_wrapper import ObservationConfig
+
+    return ObservationConfig(layout="paper", paper_obstacles=obstacles)
+
+
+def test_paper_observation_shapes():
+    from lsy_drone_racing.control.rl_single_l2.env_wrapper import encode_obs
+
+    obs = observation()
+    assert paper_config().size == 40  # 39 paper dims + next-gate valid flag
+    assert encode_obs(obs, None, paper_config()).shape == (40,)
+    assert paper_config(True).size == 40 + 5 * 4
+    assert encode_obs(batch(3), None, paper_config(True)).shape == (3, 60)
+
+
+def test_paper_corners_symmetric_for_gate_ahead_and_position_velocity():
+    from lsy_drone_racing.control.rl_single_l2.env_wrapper import encode_obs
+
+    obs = observation()
+    obs["gates_pos"] = np.array([[1.0, 0.0, 0.0], [2.0, 0.0, 1.0]])
+    obs["vel"] = np.array([1.0, 0.0, 0.0])
+    features = np.asarray(encode_obs(obs, None, paper_config()))
+    np.testing.assert_allclose(features[:3], [1, 0, 0])
+    np.testing.assert_allclose(features[3:12], np.eye(3).ravel())
+    corners = features[12:24].reshape(4, 3)
+    np.testing.assert_allclose(corners[:, 0], 1.0, atol=1e-6)
+    # Symmetric about body x: corner set is closed under y -> -y and z -> -z.
+    np.testing.assert_allclose(np.abs(corners[:, 1:]), 0.2, atol=1e-6)
+    np.testing.assert_allclose(corners[:, 1:].sum(axis=0), 0, atol=1e-6)
+    assert features[36] == 1  # next gate valid
+    np.testing.assert_allclose(features[37:40], obs["pos"])
+
+
+def test_paper_reverse_gate_mirrors_and_last_gate_padding():
+    from lsy_drone_racing.control.rl_single_l2.env_wrapper import encode_obs
+
+    obs = observation()
+    obs["n_gates_passed"] = np.array(1)  # next entry is gate 0 in reverse
+    features = np.asarray(encode_obs(obs, None, paper_config()))
+    forward = features[12:24].reshape(4, 3) - (np.array([2.0, 0, 1]))
+    reverse = features[24:36].reshape(4, 3) - (np.array([1.0, 0, 1]))
+    np.testing.assert_allclose(reverse[:, 1], -forward[:, 1], atol=1e-6)
+    np.testing.assert_allclose(reverse[:, 2], forward[:, 2], atol=1e-6)
+    obs["n_gates_passed"] = np.array(2)  # final entry: no successor
+    features = np.asarray(encode_obs(obs, None, paper_config()))
+    np.testing.assert_array_equal(features[24:37], 0)
+    assert np.any(features[12:24] != 0)

@@ -29,15 +29,26 @@ from lsy_drone_racing.control.rl_single_l2.reward import (
     reward_components,
 )
 
+OBS_LAYOUTS = ("current", "paper")
+GATE_INNER_HALF_WIDTH = 0.2  # Level 2 gates have a 0.4 m square inner opening.
+
 
 @dataclass(frozen=True)
 class ObservationConfig:
-    """Fixed feature layout and running-normalization parameters."""
+    """Fixed feature layout and running-normalization parameters.
+
+    layout="current" is the original feature vector. layout="paper" follows
+    Pasumarti et al. (2026): body velocity, attitude, current/next gate corners in
+    the body frame and global position; gate_lookahead is then unused and the
+    nearest-obstacle block is appended only when paper_obstacles is set.
+    """
 
     gate_lookahead: int = 2
     obstacle_count: int = 4
     clip: float = 10.0
     epsilon: float = 1e-8
+    layout: str = "current"
+    paper_obstacles: bool = False
 
     def __post_init__(self) -> None:
         """Reject layouts that cannot represent the target gate."""
@@ -45,11 +56,21 @@ class ObservationConfig:
             raise ValueError("gate_lookahead must be positive and obstacle_count nonnegative")
         if self.clip <= 0 or self.epsilon <= 0:
             raise ValueError("normalization clip and epsilon must be positive")
+        if self.layout not in OBS_LAYOUTS:
+            raise ValueError(f"layout must be one of {OBS_LAYOUTS}")
 
     @property
     def size(self) -> int:
         """Return the fixed flattened observation dimension."""
+        if self.layout == "paper":
+            obstacles = 5 * self.obstacle_count if self.paper_obstacles else 0
+            return PAPER_BASE_SIZE + obstacles
         return 23 + 8 * self.gate_lookahead + 5 * self.obstacle_count
+
+
+# Body velocity (3), rotation (9), current corners (12), next corners (12),
+# next-gate valid flag (1), global position (3).
+PAPER_BASE_SIZE = 40
 
 
 @dataclass(frozen=True)
@@ -170,6 +191,91 @@ def _as_batch(obs: dict[str, Any]) -> tuple[dict[str, Array], bool]:
     }, single
 
 
+def _gate_corners_body(
+    batch: dict[str, Array], slot: Array, world_to_body: Array, pos: Array
+) -> tuple[Array, Array]:
+    """Return a sequence slot's inner-opening corners in the body frame (n, 12).
+
+    Corners lie at +/-GATE_INNER_HALF_WIDTH along the gate's local y and z axes
+    (local x is the crossing normal). For reverse passes the local y axis is
+    mirrored so the corner order is identical when seen from the approach side.
+    Slots past the end of the sequence are zero padded and flagged invalid.
+    """
+    count = pos.shape[0]
+    rows = jnp.arange(count)
+    sequence = batch["gate_sequence"].astype(jnp.int32)
+    valid = slot < sequence.shape[1]
+    indices = jnp.minimum(slot, sequence.shape[1] - 1)
+    gate_ids = sequence[rows, indices]
+    direction = batch["gate_sequence_direction"][rows, indices].astype(jnp.float32)
+    gate_rot = Rotation.from_quat(batch["gates_quat"][rows, gate_ids]).as_matrix()
+    h = GATE_INNER_HALF_WIDTH
+    local = jnp.array([[0.0, h, h], [0.0, -h, h], [0.0, -h, -h], [0.0, h, -h]])
+    local = (
+        local[None]
+        * jnp.stack([jnp.ones_like(direction), direction, jnp.ones_like(direction)], axis=-1)[
+            :, None
+        ]
+    )
+    corners = jnp.einsum("bij,bkj->bki", gate_rot, local) + batch["gates_pos"][rows, gate_ids, None]
+    corners = jnp.einsum("bij,bkj->bki", world_to_body, corners - pos[:, None])
+    return jnp.where(valid[:, None], corners.reshape(count, 12), 0), valid
+
+
+def _obstacle_features(
+    batch: dict[str, Array], world_to_body: Array, pos: Array, obstacle_count: int
+) -> list[Array]:
+    """Nearest obstacles' body-relative position (3), revealed flag (1), valid flag (1)."""
+    count = pos.shape[0]
+    rows = jnp.arange(count)
+    features = []
+    obstacles = batch["obstacles_pos"] - pos[:, None]
+    order = jnp.argsort(jnp.linalg.norm(obstacles, axis=-1), axis=1, stable=True)
+    for offset in range(obstacle_count):
+        if offset >= obstacles.shape[1]:
+            features.append(jnp.zeros((count, 5)))
+            continue
+        indices = order[:, offset]
+        relative = jnp.einsum("bij,bj->bi", world_to_body, obstacles[rows, indices])
+        features.append(
+            jnp.concatenate(
+                [relative, batch["obstacles_visited"][rows, indices, None], jnp.ones((count, 1))],
+                axis=1,
+            )
+        )
+    return features
+
+
+def _encode_paper(batch: dict[str, Array], cfg: ObservationConfig) -> list[Array]:
+    """Pasumarti et al. (2026) actor features, without opponent terms.
+
+    Layout: body-frame linear velocity (3), body-to-world rotation (9), current
+    target gate corners in the body frame (12), next gate corners (12), next-gate
+    valid flag (1), global position (3); optionally the nearest-obstacle block.
+    The valid flag is our addition: one episode is one lap, so the final target
+    has no successor (the paper races several laps). Only sensor-masked poses
+    are used.
+    """
+    pos = batch["pos"]
+    count = pos.shape[0]
+    rotation = Rotation.from_quat(batch["quat"]).as_matrix()
+    world_to_body = rotation.transpose(0, 2, 1)
+    passed = jnp.asarray(batch["n_gates_passed"], dtype=jnp.int32).reshape(count)
+    current, _ = _gate_corners_body(batch, passed, world_to_body, pos)
+    following, next_valid = _gate_corners_body(batch, passed + 1, world_to_body, pos)
+    features = [
+        jnp.einsum("bij,bj->bi", world_to_body, batch["vel"]),
+        rotation.reshape(count, 9),
+        current,
+        following,
+        next_valid[:, None].astype(jnp.float32),
+        pos,
+    ]
+    if cfg.paper_obstacles:
+        features += _obstacle_features(batch, world_to_body, pos, cfg.obstacle_count)
+    return features
+
+
 @partial(jax.jit, static_argnames=("config",))
 def encode_obs(
     obs: dict[str, Any],
@@ -178,12 +284,13 @@ def encode_obs(
 ) -> Array:
     """Encode single/batched official observations into one shared feature vector.
 
-    Layout: position (3), body-to-world rotation matrix (9), body-frame linear
-    velocity (3), body angular velocity (3), previous executed attitude/thrust
+    Layout "current": position (3), body-to-world rotation matrix (9), body-frame
+    linear velocity (3), body angular velocity (3), previous executed attitude/thrust
     command (4), completed sequence fraction (1); then each upcoming gate's
     body-relative center (3), signed crossing normal (3), revealed flag (1),
     valid flag (1); finally nearest obstacles' body-relative positions (3),
     revealed flag (1), valid flag (1). Missing slots are zero padded.
+    Layout "paper": see _encode_paper; previous_action is ignored.
 
     Unlike the reference, there is no privileged critic half, and no target_gate
     sentinel. Official n_gates_passed indexes gate_sequence, supporting repeated
@@ -191,6 +298,22 @@ def encode_obs(
     """
     cfg = config or ObservationConfig()
     batch, single = _as_batch(obs)
+    pos = batch["pos"]
+    count = pos.shape[0]
+    if cfg.layout == "paper":
+        features = _encode_paper(batch, cfg)
+    else:
+        features = _encode_current(batch, previous_action, cfg)
+    encoded = jnp.concatenate(features, axis=1).astype(jnp.float32)
+    if encoded.shape != (count, cfg.size):
+        raise ValueError("Official observation produced an invalid feature shape")
+    return encoded[0] if single else encoded
+
+
+def _encode_current(
+    batch: dict[str, Array], previous_action: Array | None, cfg: ObservationConfig
+) -> list[Array]:
+    """Original feature layout; see encode_obs."""
     pos = batch["pos"]
     count = pos.shape[0]
     rotation = Rotation.from_quat(batch["quat"]).as_matrix()
@@ -227,24 +350,7 @@ def encode_obs(
             axis=1,
         )
         features.append(jnp.where(valid[:, None], values, 0))
-    obstacles = batch["obstacles_pos"] - pos[:, None]
-    order = jnp.argsort(jnp.linalg.norm(obstacles, axis=-1), axis=1, stable=True)
-    for offset in range(cfg.obstacle_count):
-        if offset >= obstacles.shape[1]:
-            features.append(jnp.zeros((count, 5)))
-            continue
-        indices = order[:, offset]
-        relative = jnp.einsum("bij,bj->bi", world_to_body, obstacles[rows, indices])
-        features.append(
-            jnp.concatenate(
-                [relative, batch["obstacles_visited"][rows, indices, None], jnp.ones((count, 1))],
-                axis=1,
-            )
-        )
-    encoded = jnp.concatenate(features, axis=1).astype(jnp.float32)
-    if encoded.shape != (count, cfg.size):
-        raise ValueError("Official observation produced an invalid feature shape")
-    return encoded[0] if single else encoded
+    return features + _obstacle_features(batch, world_to_body, pos, cfg.obstacle_count)
 
 
 def _as_euler_xyz(rotation: Rotation) -> Array:
