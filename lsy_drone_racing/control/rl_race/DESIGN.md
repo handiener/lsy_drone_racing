@@ -47,13 +47,19 @@ conversions, obstacle selection), so it can be optimized later.
   - checkpoints;
   - `restore_params` / `restore_value_fn`, used to reset the critic when switching rewards;
   - `progress_fn`, which feeds W&B.
-- **Compatibility:**
-  - Brax imports with our pins (jax 0.11.0, flax 0.12.8, optax 0.2.8, orbax 0.12.2) once
-    `jaxopt`, `tensorboardX` and `mujoco-mjx==3.10.0` are added.
-  - jax 0.11 removed `jax.device_put_replicated`, which Brax still calls. A three-line shim in our
-    launcher fixes it. A toy PPO run learned on the GPU with the shim (reward −94 → −11 in 2M steps,
-    13 s).
-  - The shim is covered by a test and gets revisited when Brax updates.
+- **Version: Brax from GitHub, pinned to commit `c8605294264a` (main, 2026-10-20).**
+  - jax removed `jax.device_put_replicated` in 0.10.0. The latest Brax release, 0.14.2 (2026-03-15),
+    still calls it, so **no released Brax works with jax ≥ 0.10**. Our flax 0.12.8 needs jax ≥ 0.10.
+  - Brax fixed this on `main` in `303d89d` (2026-03-25) but hasn't released since.
+  - The pinned commit works unmodified with our pins (jax 0.11.0, flax 0.12.8, optax 0.2.8,
+    orbax 0.12.2), plus `jaxopt`, `tensorboardX` and `mujoco-mjx==3.10.0`. A toy PPO run learned on
+    the GPU (reward −94 → −17 in 2M steps, 11 s).
+  - Switch to the next Brax release once one appears.
+  - Rejected alternatives:
+    - **Downgrading jax below 0.10:** this forces an older flax too. All pixi environments share one
+      solve group, so it would also change the simulator stack in the `default` environment that the
+      leaderboard installs.
+    - **A compatibility shim around the released 0.14.2:** it works but patches jax.
 - **Dependencies** are added to the `gpu` (training) environment only. The `default` environment,
   which the leaderboard installs, doesn't need Brax: the deployed controller is a plain MLP.
 
