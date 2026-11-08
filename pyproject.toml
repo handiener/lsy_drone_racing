@@ -218,6 +218,8 @@ exclude = [
     "dist",
     "site-packages",
     "venv",
+    # Verbatim upstream Brax code (plus one hook); kept in upstream style to stay diffable.
+    "lsy_drone_racing/control/rl_race/brax_ppo_train.py",
 ]
 
 line-length = 100
