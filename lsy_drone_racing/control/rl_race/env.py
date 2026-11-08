@@ -181,6 +181,7 @@ class RaceEnv(Env):
             self.start_pos,
             prev["pos"],
             raw["pos"],
+            lateral_weight=self.cfg.reward.path_lateral,
         )
         reward, components = rewards.compute(self.cfg.reward, event, raw["ang_vel"], progress)
 

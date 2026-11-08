@@ -1,7 +1,7 @@
 """Reward functions: semi-sparse ``race`` and its pre-training variant ``dense_path``.
 
     r = gate * gates_passed + lap * finished - time - ang_vel * |omega_measured|
-        - crash * crashed + progress * (arc length gained along the nominal path)
+        - crash * crashed + progress * delta(arc - path_lateral * distance to the path)
 
 ``race`` has progress = 0. ``dense_path`` adds the progress term for pre-training; the switch to
 ``race`` happens once the policy finishes the course often enough (see train.py). Gate and lap
@@ -28,6 +28,7 @@ class RewardConfig:
     ang_vel: float = 0.005
     crash: float = 20.0
     progress: float = 0.0
+    path_lateral: float = 1.0  # Weight of the distance-to-path term in the path potential.
 
 
 REWARD_PRESETS = {"race": RewardConfig(), "dense_path": RewardConfig(progress=15.0)}
@@ -57,7 +58,8 @@ def compute(
         cfg: Coefficients.
         event: Output of ``events``.
         ang_vel: (n, 3) measured body rates after the step.
-        progress: (n,) arc length gained along the nominal path (zero on crash steps).
+        progress: (n,) change of the path potential (see ``path.arc_progress``); zeroed on
+            crash steps.
     """
     components = {
         "gate": cfg.gate * event["gates"].astype(jnp.float32),

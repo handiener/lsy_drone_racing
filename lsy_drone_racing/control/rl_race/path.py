@@ -119,12 +119,20 @@ def arc_progress(
     start_pos: Array,
     prev_pos: Array,
     pos: Array,
+    lateral_weight: float = 0.0,
 ) -> Array:
-    """Arc length gained along leg ``leg`` between two positions, shape (n,)."""
+    """Change of the path potential arc(p) - lateral_weight * dist(p, path), shape (n,).
+
+    Without the lateral term, any position beyond the gate's plane projects onto the end of
+    the leg, so flying past the gate *beside* the opening would collect the full progress
+    without passing the gate. Subtracting the distance to the path removes that shortcut; as a
+    potential difference it only rewards changes, so a constant offset (e.g. a cut corner) costs
+    nothing over time.
+    """
     controls = leg_control_points(
         gates_pos, gates_quat, gate_sequence, gate_sequence_direction, leg, start_pos
     )
     points, cumulative = polyline(*controls)
-    before, _ = project(points, cumulative, prev_pos)
-    after, _ = project(points, cumulative, pos)
-    return after - before
+    arc_before, dist_before = project(points, cumulative, prev_pos)
+    arc_after, dist_after = project(points, cumulative, pos)
+    return (arc_after - lateral_weight * dist_after) - (arc_before - lateral_weight * dist_before)

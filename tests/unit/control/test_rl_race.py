@@ -127,3 +127,20 @@ def test_reward_events_and_components():
     np.testing.assert_allclose(total[2], 10 + 50 - 0.05 - 0.01 + 1.5, atol=1e-5)
     np.testing.assert_allclose(total[1], -20 - 0.05 - 0.01, atol=1e-5)
     assert rewards.preset("race").progress == 0.0
+
+
+def test_path_potential_penalizes_passing_beside_the_gate():
+    args = (GATES_POS, GATES_QUAT, SEQUENCE, DIRECTION, jnp.array([1]), START)
+    before = jnp.array([[2.5, 0.0, 1.0]])  # on the path, 0.5 m before gate 1 (x = 3)
+    through = jnp.array([[3.2, 0.0, 1.0]])  # beyond the plane, through the opening
+    beside = jnp.array([[3.2, 1.4, 1.0]])  # beyond the plane, 1.4 m beside the opening
+    plain = [float(path.arc_progress(*args, before, p)[0]) for p in (through, beside)]
+    assert plain[0] == pytest.approx(plain[1], abs=1e-3)  # arc alone cannot tell them apart
+    shaped = [
+        float(path.arc_progress(*args, before, p, lateral_weight=1.0)[0]) for p in (through, beside)
+    ]
+    assert shaped[0] - shaped[1] == pytest.approx(np.hypot(0.2, 1.4) - 0.2, abs=1e-2)
+    # A constant offset parallel to the path costs nothing.
+    side_a, side_b = jnp.array([[1.8, 0.3, 1.0]]), jnp.array([[2.2, 0.3, 1.0]])
+    gain = float(path.arc_progress(*args, side_a, side_b, lateral_weight=1.0)[0])
+    assert gain == pytest.approx(0.4, abs=1e-2)
