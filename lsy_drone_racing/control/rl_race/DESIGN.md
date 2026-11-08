@@ -152,3 +152,30 @@ iterations and is logged to W&B. The official `pixi run evaluate` stays the fina
 - Speed range of the path starts (0–4 m/s proposed).
 - Final value of the post-switch policy learning rate.
 - θ_max beyond 70° (later sweep).
+
+## Implementation notes (2026-11-08)
+
+- **Throughput:** about 1 M steps/s for one run at 8192 envs, with the GPU at ~96 %. Three runs in
+  parallel share the GPU (~330k steps/s each). The old SBX pipeline did ~50k per run.
+- **Progress potential:** arc length alone let the policy fly past a gate *beside* the opening and
+  still collect the full leg progress. Any point beyond the gate's plane projects onto the end of
+  the leg. The first run learned exactly that, then hovered until the time limit. The progress
+  term is therefore Δ(arc − path_lateral · distance-to-path), with `path_lateral = 1`. As a
+  potential difference it only rewards changes, so a constant offset (a cut corner) costs nothing.
+- **Pre-training reward:** with crash −20 and time −0.05 per step, sitting on the takeoff platform
+  is worth only about −5 (discounted). The policy learned not to take off before discovering that
+  a controlled takeoff pays. Three variants were compared for 150M steps (one seed each), all of
+  which learn:
+
+  | Variant | Success | Lap time |
+  | --- | --- | --- |
+  | crash −5, time −0.05 | 59 % | 4.44 s |
+  | **crash −20, time −0.2** | **81 %** | 4.55 s |
+  | crash −5, time −0.1 | 73 % | 4.50 s |
+
+  The chosen variant keeps the crash penalty and raises the time penalty only during
+  pre-training (`--pretrain_crash=20 --pretrain_time=0.2`). The race reward is unchanged.
+- **Key types:** Brax passes raw `uint32` keys, while crazyflow stores typed keys; `env.reset` wraps
+  them with `jax.random.wrap_key_data`.
+- **Brax eval** reads `info["steps"]`. The adapter provides it as the episode length including the
+  current step.
