@@ -3,7 +3,7 @@
 The adapter is natively batched: ``reset`` takes (n, 2) keys and ``step`` (n, 3) actions, so it is
 used with ``wrap_env=False`` in Brax PPO. It performs its own auto-reset (official reset, then path
 starts for a share of the done worlds) and maintains the fields Brax expects in ``State.info``:
-``truncation``, ``episode_done`` and ``episode_metrics``.
+``truncation``, ``steps``, ``episode_done`` and ``episode_metrics``.
 
 Episode ends: crash/out of bounds (terminated), lap finished (on the step the last gate is
 passed) or the time limit (truncation, bootstrapped by Brax's truncation masking).
@@ -145,6 +145,7 @@ class RaceEnv(Env):
             "previous_action": previous_action,
             "official": official.astype(jnp.float32),
             "truncation": zeros,
+            "steps": zeros,
             "episode_done": zeros,
             "episode_metrics": {"sum_reward": zeros, "length": zeros, **metrics},
         }
@@ -188,7 +189,8 @@ class RaceEnv(Env):
         official = state.info["official"]
         donef = done.astype(jnp.float32)
         finishedf = event["finished"].astype(jnp.float32)
-        seconds = data.steps.astype(jnp.float32) / self.freq
+        steps_taken = data.steps.astype(jnp.float32)
+        seconds = steps_taken / self.freq
         metrics = {
             "gates": event["gates"].astype(jnp.float32),
             "finished": finishedf,
@@ -219,6 +221,7 @@ class RaceEnv(Env):
             "previous_action": previous_action,
             "official": official,
             "truncation": timeout.astype(jnp.float32),
+            "steps": steps_taken,  # episode length including this step (read by Brax eval)
             "episode_done": donef,
             "episode_metrics": episode,
         }
