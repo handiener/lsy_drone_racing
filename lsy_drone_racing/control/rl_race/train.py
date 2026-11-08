@@ -49,6 +49,7 @@ def env_config(
     max_steps: int,
     pretrain_reward: dict[str, float] | None = None,
     race_reward: dict[str, float] | None = None,
+    n_gates: int = 2,
 ) -> EnvConfig:
     """Environment configuration of a stage (``pretrain`` or ``race``).
 
@@ -62,7 +63,7 @@ def env_config(
     return EnvConfig(
         max_episode_steps=max_steps,
         action=ActionConfig(theta_max_deg=theta_max_deg),
-        obs=ObsConfig(),
+        obs=ObsConfig(n_gates=n_gates),
         reward=reward,
         start=StartConfig(official_prob=official_prob),
     )
@@ -101,6 +102,7 @@ def train(
     device: str = "gpu",
     # Problem.
     theta_max_deg: float = 70.0,
+    n_gates: int = 2,
     official_start_prob: float = 0.5,
     max_episode_steps: int = 750,
     # Schedule.
@@ -214,9 +216,10 @@ def train(
                 max_episode_steps,
                 pretrain_reward,
                 race_reward,
+                n_gates,
             )
             eval_cfg = env_config(
-                stage, theta_max_deg, 1.0, max_episode_steps, pretrain_reward, race_reward
+                stage, theta_max_deg, 1.0, max_episode_steps, pretrain_reward, race_reward, n_gates
             )
             env = RaceEnv(num_envs, cfg, device=device, seed=seed)
             eval_env = RaceEnv(num_eval_envs, eval_cfg, device=device, seed=seed + 10_000)
