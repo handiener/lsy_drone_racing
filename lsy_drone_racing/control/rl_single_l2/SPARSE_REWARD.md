@@ -114,7 +114,7 @@ EXTRA="--mode=warm_start --checkpoint=outputs/p1_ds_s<seed>/checkpoints/step_000
 
 All runs use 100M steps per stage and 3 seeds. Each run was evaluated with `eval_paper.py`: 50 episodes from the official starts, deterministic actions, final checkpoint. Values are mean ± std over seeds. Crash counts are per 50 episodes, averaged over seeds. "Time" is the mean time to complete over successful episodes. W&B: project `lsy-drone-racing`, groups `phase1-100M` and `phase1-fallbacks`.
 
-| Config | Total steps | Success | Time [s] | Gates passed (of 4) | Gate / obstacle / out-of-bounds crashes | Timeouts |
+| Config | Total steps | Success | Time [s] | Gates passed (of 5) | Gate / obstacle / out-of-bounds crashes | Timeouts |
 | --- | --- | --- | --- | --- | --- | --- |
 | DS (dense baseline) | 100M | 14.0 ± 4.9 % | 12.6 ± 1.4 | 1.91 ± 0.14 | 29.0 / 9.3 / 0.0 | 4.7 |
 | SS-current | 100M | 0 % | n/a | 0.00 | 0.0 / 0.0 / 46.7 | 3.3 |
@@ -146,3 +146,53 @@ Both fall below the script's 50 % threshold.
   - With F4, sparse fine-tuning reaches 39 % success.
 - **The F4 gain comes from the extra training steps, not from the sparse reward.** The equal-budget DS control reaches the same success (40 ± 4 % vs 39 ± 3 %, within noise) and a similar lap time. Sparse fine-tuning keeps the DS skill but, at this budget, does not improve it.
 - The DS baseline itself has not converged at 100M steps: it goes from 14 % to 40 % with another 100M. The paper trains about 1.5·10⁹ agent steps, roughly 15× our per-run budget. A fair test of SS-from-scratch therefore needs a much larger budget, or a curriculum that removes the segment-start exploit, for example starts in the middle between gates instead of 0.5 m before them. We consider this the main open item before phase 2.
+
+## Continuation to 1B steps with wider actuator limits
+
+**Why:** the original actor head was `tanh(mean)`, then a sigmoid (thrust) or a radial tanh (rotation). Evaluation and deployment use the mean, so the deterministic policy could reach only:
+- 73 % of the thrust range: thrust-to-weight 1.43 instead of 1.88, and never below 0.65 g;
+- 6.1 rad/s per rotation axis instead of 8.
+
+The noisy actions during training could go beyond these limits, so training and evaluation saw different limits. Since commit `032d1a6`:
+
+| Setting | Flag | Value for new runs | Value for legacy checkpoints/exports |
+| --- | --- | --- | --- |
+| Soft mean bound b in `b·tanh(z/b)` | `--mean_bound` | 3.0 (95 % of the thrust range) | 1.0 |
+| Rotation limit per step | `--alpha_max_rad` | 0.30 (15 rad/s) | 0.16 (8 rad/s) |
+| Small-signal rotation gain | `--alpha_gain_rad` | 0.16 | equal to `alpha_max_rad` |
+
+Both mappings keep their slope at zero, so a warm-started policy changes only where it used to saturate. `--start_timesteps` continues a lineage's step counter on warm starts, so logs, W&B and checkpoint names count cumulative steps.
+
+**Runs** (W&B group `phase1-1B`). Both lineages continue from 201M cumulative steps to 1B with the new limits, 3 seeds each:
+- **SS**: the F4 checkpoints, trained with the sparse reward and F1–F3 settings (sparse reward with gamma 0.995).
+- **DS**: the equal-budget DS control checkpoints, trained with the dense reward (gamma 0.99).
+
+Applying the wider limits to the SS checkpoint before any further training made it faster (8.8 s vs about 11.6 s) but less reliable (14 % success instead of about 40 %). PPO had to re-tune.
+
+| Config (1B cumulative steps) | Success | Time [s] | Speed, all episodes [m/s] | Gates passed (of 5) | Gate / obstacle / out-of-bounds crashes | Timeouts |
+| --- | --- | --- | --- | --- | --- | --- |
+| DS: 1B dense | 52.0 ± 4.3 % | **6.0 ± 0.5** | 1.91 ± 0.07 | 3.48 ± 0.16 | 10.0 / 13.7 / 0.0 | 0.3 |
+| SS: 100M dense, then 900M sparse | **71.3 ± 11.6 %** | 7.6 ± 1.2 | 1.66 ± 0.05 | 4.30 ± 0.28 | 4.3 / 8.0 / 0.0 | 2.0 |
+
+Per seed, success was 48 / 58 / 50 % for DS and 56 / 74 / 84 % for SS.
+
+Official `pixi run evaluate` (20 runs) on the best seed of each config:
+
+| Actor | Success | Average time (successful runs) |
+| --- | --- | --- |
+| SS, seed 3 | 15 / 20 (75 %) | 6.76 s |
+| DS, seed 2 | 13 / 20 (65 %) | 5.72 s |
+
+Both pass the official 50 % threshold. The exports are in `outputs/exports/ss_1B_s3` and `outputs/exports/ds_1B_s2`; `deploy_model` is unchanged.
+
+**Interpretation:**
+- Given a DS warm start and enough steps, the sparse reward gives the more **reliable** policy: success 71 % vs 52 %, and about 2.5× fewer gate contacts.
+- DS gives the **faster** one: 6.0 s vs 7.6 s mean lap time.
+- This matches the reward structure:
+  - The sparse reward has no time penalty, so gamma is its only pressure to fly fast, and it pays only on events.
+  - The dense reward pays per metre of progress and every step costs 0.1, which pushes speed at the cost of risk.
+- **Confounds:**
+  - The SS lineage uses gamma 0.995 and segment-start probability 0.8; DS uses gamma 0.99 and 0.4.
+  - The 100M-step DS warm start is part of the SS result.
+  - Seed variance in SS is large (56–84 %).
+- The wider actuator limits made both lineages much faster than at 200M steps (DS 11.1 → 6.0 s, SS 11.6 → 7.6 s), with success still rising. We did not run an ablation that would separate the effect of the limits from the effect of the extra steps.
