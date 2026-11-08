@@ -48,6 +48,7 @@ def env_config(
     official_prob: float,
     max_steps: int,
     pretrain_reward: dict[str, float] | None = None,
+    race_reward: dict[str, float] | None = None,
 ) -> EnvConfig:
     """Environment configuration of a stage (``pretrain`` or ``race``).
 
@@ -57,7 +58,7 @@ def env_config(
     if stage == "pretrain":
         reward = rewards.preset("dense_path", **(pretrain_reward or {}))
     else:
-        reward = rewards.preset("race")
+        reward = rewards.preset("race", **(race_reward or {}))
     return EnvConfig(
         max_episode_steps=max_steps,
         action=ActionConfig(theta_max_deg=theta_max_deg),
@@ -113,6 +114,11 @@ def train(
     critic_only_iterations: int = 10,
     start_params: str | None = None,
     start_stage: str = "pretrain",
+    continue_race: bool = False,
+    start_step: int = 0,
+    lr_decay_to: float = 1.0,
+    race_time: float | None = None,
+    race_crash: float | None = None,
     # PPO (Brax): one iteration = num_envs * unroll_length * (batch * minibatches / num_envs).
     num_envs: int = 8192,
     unroll_length: int = 32,
@@ -190,16 +196,28 @@ def train(
         "path_lateral": pretrain_path_lateral,
     }
     pretrain_reward = {key: value for key, value in overrides.items() if value is not None}
-    step_offset = 0
+    race_reward = {
+        key: value
+        for key, value in {"time": race_time, "crash": race_crash}.items()
+        if value is not None
+    }
+    step_offset = start_step
     params = load_params(start_params) if start_params else None
     stage_log: list[dict[str, Any]] = []
     stages = ["pretrain", "race"] if start_stage == "pretrain" else ["race"]
     try:
         for stage in stages:
             cfg = env_config(
-                stage, theta_max_deg, official_start_prob, max_episode_steps, pretrain_reward
+                stage,
+                theta_max_deg,
+                official_start_prob,
+                max_episode_steps,
+                pretrain_reward,
+                race_reward,
             )
-            eval_cfg = env_config(stage, theta_max_deg, 1.0, max_episode_steps, pretrain_reward)
+            eval_cfg = env_config(
+                stage, theta_max_deg, 1.0, max_episode_steps, pretrain_reward, race_reward
+            )
             env = RaceEnv(num_envs, cfg, device=device, seed=seed)
             eval_env = RaceEnv(num_eval_envs, eval_cfg, device=device, seed=seed + 10_000)
             steps = pretrain_max_steps if stage == "pretrain" else race_steps
@@ -251,14 +269,28 @@ def train(
             kwargs: dict[str, Any] = {}
             if params is not None:
                 kwargs["restore_params"] = params
-            if stage == "race" and params is not None:
-                kwargs["restore_value_fn"] = False  # critic re-initialized for the new reward
+            updates = iteration_updates(num_updates_per_batch, num_minibatches)
+            transitions = batch_size * num_minibatches * unroll_length
+            decay = -(-steps // transitions) * updates  # optimizer steps of this stage
+            if stage == "race" and params is not None and continue_race:
+                # Continue a race-stage run: keep the critic, no freeze.
                 kwargs["optimizer_override"] = separate_lr(
                     policy_lr=policy_lr_after_switch,
                     value_lr=learning_rate,
                     max_grad_norm=max_grad_norm,
-                    freeze_policy_steps=critic_only_iterations
-                    * iteration_updates(num_updates_per_batch, num_minibatches),
+                    decay_steps=decay,
+                    final_lr_factor=lr_decay_to,
+                )
+            elif stage == "race" and params is not None:
+                kwargs["restore_value_fn"] = False  # critic re-initialized for the new reward
+                freeze = critic_only_iterations * updates
+                kwargs["optimizer_override"] = separate_lr(
+                    policy_lr=policy_lr_after_switch,
+                    value_lr=learning_rate,
+                    max_grad_norm=max_grad_norm,
+                    freeze_policy_steps=freeze,
+                    decay_steps=max(decay - freeze, 0),
+                    final_lr_factor=lr_decay_to,
                 )
             switched = False
             try:
