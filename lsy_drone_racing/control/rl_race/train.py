@@ -42,9 +42,22 @@ class _SwitchReward(Exception):
     """Raised from progress_fn to end pre-training once the success threshold is met."""
 
 
-def env_config(stage: str, theta_max_deg: float, official_prob: float, max_steps: int) -> EnvConfig:
-    """Environment configuration of a stage (``pretrain`` or ``race``)."""
-    reward = rewards.preset("dense_path" if stage == "pretrain" else "race")
+def env_config(
+    stage: str,
+    theta_max_deg: float,
+    official_prob: float,
+    max_steps: int,
+    pretrain_reward: dict[str, float] | None = None,
+) -> EnvConfig:
+    """Environment configuration of a stage (``pretrain`` or ``race``).
+
+    ``pretrain_reward`` overrides coefficients of the ``dense_path`` shaping reward; the race
+    reward always uses the ``race`` preset.
+    """
+    if stage == "pretrain":
+        reward = rewards.preset("dense_path", **(pretrain_reward or {}))
+    else:
+        reward = rewards.preset("race")
     return EnvConfig(
         max_episode_steps=max_steps,
         action=ActionConfig(theta_max_deg=theta_max_deg),
@@ -91,6 +104,10 @@ def train(
     max_episode_steps: int = 750,
     # Schedule.
     pretrain_max_steps: int = 500_000_000,
+    pretrain_crash: float | None = None,
+    pretrain_time: float | None = None,
+    pretrain_progress: float | None = None,
+    pretrain_path_lateral: float | None = None,
     race_steps: int = 1_000_000_000,
     switch_success: float = 0.3,
     critic_only_iterations: int = 10,
@@ -166,14 +183,23 @@ def train(
             },
         )
 
+    overrides = {
+        "crash": pretrain_crash,
+        "time": pretrain_time,
+        "progress": pretrain_progress,
+        "path_lateral": pretrain_path_lateral,
+    }
+    pretrain_reward = {key: value for key, value in overrides.items() if value is not None}
     step_offset = 0
     params = load_params(start_params) if start_params else None
     stage_log: list[dict[str, Any]] = []
     stages = ["pretrain", "race"] if start_stage == "pretrain" else ["race"]
     try:
         for stage in stages:
-            cfg = env_config(stage, theta_max_deg, official_start_prob, max_episode_steps)
-            eval_cfg = env_config(stage, theta_max_deg, 1.0, max_episode_steps)
+            cfg = env_config(
+                stage, theta_max_deg, official_start_prob, max_episode_steps, pretrain_reward
+            )
+            eval_cfg = env_config(stage, theta_max_deg, 1.0, max_episode_steps, pretrain_reward)
             env = RaceEnv(num_envs, cfg, device=device, seed=seed)
             eval_env = RaceEnv(num_eval_envs, eval_cfg, device=device, seed=seed + 10_000)
             steps = pretrain_max_steps if stage == "pretrain" else race_steps
