@@ -7,7 +7,7 @@ Stage ``race``: reward ``race``; the critic is re-initialized and trained alone 
 
 Usage::
 
-    python -m lsy_drone_racing.control.rl_race.train --run_name=race_s1 --seed=1 \\
+    python -m lsy_drone_racing.control.rl_race.train --run_name=race_s1 --seed=1 \
         --wandb_project=lsy-drone-racing --wandb_group=rl-race
 """
 
