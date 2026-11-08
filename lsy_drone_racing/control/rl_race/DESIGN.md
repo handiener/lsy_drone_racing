@@ -86,20 +86,27 @@ conversions, obstacle selection), so it can be optimized later.
 - the nearest obstacles (`obstacles_pos`), relative to the drone, in the body frame;
 - gates and obstacles use the sensor-masked positions (nominal until within 0.7 m).
 
-**Actions (proposed).** Absolute roll/pitch commands in ±θ_max, yaw, and collective thrust over the
-full range, from Brax's `tanh_normal` distribution. This removes the rate cap and the double squashing
-(`mean_bound`, `alpha_max_rad`/`alpha_gain_rad`). To isolate trainer bugs, the trainer is validated
-first with the old incremental action (see Validation).
+**Actions.** 3-D action `[roll, pitch, thrust]` from Brax's `tanh_normal` distribution, each in [−1, 1]:
+- roll and pitch: absolute commands, scaled to ±θ_max with **θ_max = 70°** (flag `--theta_max_deg`, to
+  be tuned later);
+- thrust: affine map onto the full collective-thrust range of the attitude interface;
+- **yaw is dropped from the action and always commanded as 0** (the start heading). A quadrotor's
+  translation doesn't depend on yaw, and holding it fixed keeps roll/pitch aligned with fixed world
+  axes, which is easier to learn.
+
+There is no incremental mapping, `alpha_max_rad`/`alpha_gain_rad` or `mean_bound`: deterministic
+actions reach the actuator limits by construction. The old incremental action exists only as a
+validation mode for the trainer (see Validation).
 
 **Starts.**
-- A fixed share of official ground starts (about 30–40 %).
+- **50 % official ground starts** at first (flag `--official_start_prob`, can be lowered later).
 - The rest start on a nominal path for leg k: a cubic Hermite curve from the exit side of gate k−1 to
   the entry side of gate k. Its tangents follow each gate's passing normal, built from the provided
   positions and quaternions.
 - Sample a point on the curve with about ±0.1–0.2 m position noise, and set `n_gates_passed = k`.
 - Set the velocity along the curve's tangent with a random speed (0–4 m/s) and small directional
-  noise, so it always points toward the next gate's correct side. Yaw follows the tangent, attitude is
-  near level.
+  noise, so it always points toward the next gate's correct side. Attitude is near level with yaw 0 (the
+  same as the commanded yaw).
 - The collision check is kept; a start inside an obstacle falls back to the official start.
 
 **Reward schedule.**
@@ -108,8 +115,15 @@ first with the old incremental action (see Validation).
      also pays for approaching from the wrong side);
    - +10 per gate, +50 per lap, −0.05 per step, −0.005·‖ω_measured‖, −20 per crash.
 2. **Switch** once jitted evaluation from the official start reaches **≥ 30 % success**.
-3. **Critic reset:** the value network is re-initialized and trained alone for a few iterations
-   before policy updates resume.
+3. **Critic reset:** the value network is re-initialized (`restore_value_fn=False`) and trained alone
+   for **10 PPO iterations** (policy learning rate 0). After that the policy resumes with a **lower
+   learning rate** than in pre-training (flag `--policy_lr_after_switch`, e.g. 1e-4 vs 3e-4).
+   - Brax uses one Adam optimizer with one learning rate for policy and critic, so this needs separate
+     learning rates. Implementation: `optax.multi_transform` with a schedule on the policy part
+     (0 for 10 iterations, then the lower rate).
+   - Brax's `train()` has no optimizer hook. We keep a copy of the PPO `train.py` from the pinned
+     commit with one added `optimizer` argument. The diff to upstream is kept minimal and covered by a
+     test showing that, without the hook, it matches upstream exactly.
 4. **Semi-sparse `race` reward:** +10 per gate (5 if trailing, phase 2), +50 per lap, −0.05 per step,
    −0.005·‖ω_measured‖, −20 per crash. There is **no fast-lap bonus for now**.
 
@@ -135,6 +149,6 @@ iterations and is logged to W&B. The official `pixi run evaluate` stays the fina
 
 ## Open questions
 
-- θ_max for absolute attitude (e.g. 60–85°) and whether yaw is absolute or held.
-- Share of official starts vs path starts, and the speed range of path starts.
-- Number of critic-only iterations after the reward switch.
+- Speed range of the path starts (0–4 m/s proposed).
+- Final value of the post-switch policy learning rate.
+- θ_max beyond 70° (later sweep).
