@@ -63,3 +63,10 @@ def test_saved_params_roundtrip_through_pickle(tmp_path: Path):
     for a, b in zip(jax.tree.leaves(params), jax.tree.leaves(loaded), strict=True):
         np.testing.assert_array_equal(np.asarray(a), np.asarray(b))
     assert separate_lr(1e-4, 1e-4) is not None
+
+
+def test_controller_never_ends_episode_early():
+    """The base Controller.step_callback returns True (finish after one step); ours must not."""
+    from lsy_drone_racing.control.rl_race.controller import RaceController
+
+    assert RaceController.step_callback(None, None, {}, 0.0, False, False, {}) is False

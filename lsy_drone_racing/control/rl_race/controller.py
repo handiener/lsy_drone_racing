@@ -85,6 +85,18 @@ class RaceController(Controller):
         self._previous = action
         return np.asarray(command, dtype=np.float32)
 
+    def step_callback(
+        self,
+        action: np.ndarray,
+        obs: dict,
+        reward: float,
+        terminated: bool,
+        truncated: bool,
+        info: dict,
+    ) -> bool:
+        """Never end the episode early; the base class returns True (finish after one step)."""
+        return False
+
     def episode_reset(self) -> None:
         """Clear the previous action between episodes."""
         self._previous = jnp.zeros(ACTION_SIZE, jnp.float32)
