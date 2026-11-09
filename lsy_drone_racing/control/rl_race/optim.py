@@ -26,6 +26,32 @@ def _labels(params: Any) -> Any:
     )
 
 
+def lr_schedule(
+    lr: float,
+    freeze_steps: int = 0,
+    warmup_steps: int = 0,
+    decay_steps: int = 0,
+    final_lr_factor: float = 1.0,
+) -> optax.Schedule:
+    """Learning rate per optimizer step: 0 while frozen, linear warmup from 0, then constant or a
+    linear decay to ``final_lr_factor * lr`` over ``decay_steps`` (constant afterwards)."""
+    parts: list[Any] = []
+    boundaries: list[int] = []
+    if freeze_steps > 0:
+        parts.append(optax.constant_schedule(0.0))
+        boundaries.append(freeze_steps)
+    if warmup_steps > 0:
+        parts.append(optax.linear_schedule(0.0, lr, warmup_steps))
+        boundaries.append(freeze_steps + warmup_steps)
+    if decay_steps > 0 and final_lr_factor != 1.0:
+        parts.append(optax.linear_schedule(lr, lr * final_lr_factor, decay_steps))
+    else:
+        parts.append(optax.constant_schedule(lr))
+    if len(parts) == 1:
+        return parts[0]
+    return optax.join_schedules(parts, boundaries=boundaries)
+
+
 def separate_lr(
     policy_lr: float,
     value_lr: float,
@@ -33,26 +59,21 @@ def separate_lr(
     freeze_policy_steps: int = 0,
     decay_steps: int = 0,
     final_lr_factor: float = 1.0,
+    warmup_steps: int = 0,
 ) -> optax.GradientTransformation:
     """Global-norm clipping, then Adam per network.
 
     The policy is frozen (learning rate 0) for the first ``freeze_policy_steps`` optimizer steps.
-    With ``decay_steps > 0`` both learning rates then decay linearly to ``final_lr_factor`` times
-    their initial value over ``decay_steps`` optimizer steps.
+    Both learning rates then ramp up linearly from 0 over ``warmup_steps`` (a fresh Adam after a
+    restart has no moment estimates) and finally, with ``decay_steps > 0``, decay linearly to
+    ``final_lr_factor`` times their initial value over ``decay_steps`` optimizer steps.
     """
-
-    def schedule(lr: float) -> Any:
-        if decay_steps > 0 and final_lr_factor != 1.0:
-            return optax.linear_schedule(lr, lr * final_lr_factor, decay_steps)
-        return optax.constant_schedule(lr)
-
-    policy_schedule = schedule(policy_lr)
-    if freeze_policy_steps > 0:
-        policy_schedule = optax.join_schedules(
-            [optax.constant_schedule(0.0), policy_schedule], boundaries=[freeze_policy_steps]
-        )
+    policy_schedule = lr_schedule(
+        policy_lr, freeze_policy_steps, warmup_steps, decay_steps, final_lr_factor
+    )
+    value_schedule = lr_schedule(value_lr, 0, warmup_steps, decay_steps, final_lr_factor)
     per_network = optax.multi_transform(
-        {"policy": optax.adam(policy_schedule), "value": optax.adam(schedule(value_lr))}, _labels
+        {"policy": optax.adam(policy_schedule), "value": optax.adam(value_schedule)}, _labels
     )
     if max_grad_norm is None:
         return per_network

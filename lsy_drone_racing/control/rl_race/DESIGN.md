@@ -245,3 +245,205 @@ W&B project `lsy-drone-racing`, groups `rl-race`, `rl-race-cont`, `rl-race-night
    (`outputs/debug/saturation.py`).
 4. Phase 2 (IPPO): the env keeps the drone axis of `MultiDroneRacing-v0`; flatten agents into the
    batch and use `value_obs_key` for a privileged critic.
+
+## Speed experiments (2026-11-09)
+
+**Where the lap time goes** (`outputs/debug/lap_analysis.py`, `night_cont_theta85`, 2048 official
+episodes in the training sim; matches the official simulator: 95.8 %, mean 3.711 s):
+
+| Leg | Gate | Mean | Std | Share of lap variance | Angle at limit | Thrust > 95 % |
+| --- | --- | --- | --- | --- | --- | --- |
+| start → 0 | 0 | 0.95 s | 0.04 | 8 % | 0 % | 32 % |
+| 0 → 1 | 1 | 0.65 s | 0.09 | 32 % | 26 % | 3 % |
+| 1 → 2 | 2 | 0.78 s | 0.06 | 6 % | 1 % | 10 % |
+| 2 → 3 | 3 | 0.76 s | 0.07 | 26 % | 0 % | 12 % |
+| 3 → 1 | 1 | 0.58 s | 0.07 | 28 % | 43 % | 7 % |
+
+- Lap std is 0.15 s (p10 3.52 s, p90 3.90 s). The slowest 20 % of laps lose 0.10–0.14 s each in
+  legs 0→1, 2→3 and 3→1.
+- **Gate randomization explains little of it.** A linear fit of the lap time on the signed gate offsets
+  gives R² 0.16. For legs 0→1, 2→3 and 3→1 it is 0.24–0.29. The rest comes from the other noise
+  sources (dynamics disturbance, start pose, mass) and how they propagate through the lap.
+- The two tight turns still hit the 85° limit in 26 % and 43 % of their steps, so θ 90° may help a little.
+- Crashes happen mostly in leg 2→3 (37 of 86).
+
+**Reward variants**, each a 500M-step continuation of `night_cont_theta85` (critic kept, fine-tuning recipe,
+`outputs/speed_chain.sh`), 100 official runs each:
+
+| Run | Change | Success | Mean lap | Best |
+| --- | --- | --- | --- | --- |
+| `night_cont_theta85` (baseline) | – | 96/100 | 3.714 s | 3.32 s |
+| `spd_time0.2_g995` | race time 0.2, γ 0.995 | 98/100 | 3.768 s | 3.52 s |
+| `spd_crash5` | race crash 5 | 96/100 | 3.798 s | 3.52 s |
+| `spd_lapbonus20_g995` | lap bonus 20/s under 4.0 s, γ 0.995 | 97/100 | 3.919 s | 3.64 s |
+
+All three got *slower* and slightly more reliable. Success dropped to 58–77 % in the first
+~50M steps while the kept critic adapted, then recovered more cautiously. Two likely reasons:
+- **A crash forfeits all remaining gate and lap rewards** (up to 10 per gate + 50). That is the
+  dominant penalty, not the crash term. γ 0.995 makes this future reward weigh even more.
+- Changing the reward under a converged critic causes a disruption phase, and the policy
+  relearns from there.
+
+The lap bonus is implemented (`--race_lap_bonus`, `--race_lap_ref`; it pays only for laps from the
+official start) and is 0 by default.
+
+## Point-mass lower bound on the lap time (2026-11-09)
+
+`min_time_bound.py` solves the minimum-time problem on the nominal level-2 track with CasADi/IPOPT.
+- **Model:** a point mass with a thrust vector of 4 × the rotor limits (0.085–0.8 N, up to 1.88 g at 43.4 g).
+- **Constraints:** tilt ≤ θ_max; each gate is crossed inside its opening shrunk by `margin`, moving
+  forward; obstacles are cylinders; the safety box applies; start at rest.
+- **Solve:** a relaxed problem (no minimum thrust, no obstacles) first, then the full problem warm-started from it.
+
+It ignores rotational dynamics, the attitude controller, drag and disturbances, so it is
+a true lower bound, but a loose one: the thrust direction can flip instantly.
+
+| θ_max | Margin | Mass | Bound | Legs (s) |
+| --- | --- | --- | --- | --- |
+| 85° | 0.05 m | 43.4 g | **2.25 s** | 0.63, 0.25, 0.65, 0.46, 0.25 |
+| 85° | 0 | 43.4 g | 2.19 s | 0.64, 0.22, 0.65, 0.44, 0.24 |
+| 85° | 0.05 m | 38.4 g (lightest) | 2.08 s | 0.58, 0.23, 0.60, 0.42, 0.24 |
+| 90° | 0.05 m | 43.4 g | 2.25 s | 0.63, 0.25, 0.65, 0.46, 0.25 |
+
+For comparison, our policy's mean legs are 0.95, 0.65, 0.78, 0.76, 0.58 s (3.71 s) and the leaderboard top is 3.27 s.
+- Thrust is at its maximum the whole lap (bang-bang), and θ 85° → 90° changes nothing in this model.
+  The tilt limit is not what binds; the thrust magnitude and the time to turn the thrust vector are.
+- The ±5 g mass randomization alone moves the bound by 0.17 s, so it is likely part of our lap-time
+  spread. The earlier variance analysis did not include it.
+- The gap to the bound is largest in legs 0→1 (0.40 s), 2→3 (0.30 s) and 3→1 (0.33 s), the same legs
+  that dominate our variance. These are the tight turns, where the bound flips the thrust direction
+  instantly. A tighter bound needs an attitude-response model, for example a rate limit on the thrust
+  direction identified from the simulator.
+
+**With the attitude response.** `outputs/debug/attitude_step.py` measured roll steps in the simulator:
+- the thrust direction turns at most **~8 rad/s** (the same at 0.43–0.75 N);
+- peak angular acceleration is 120–160 rad/s²;
+- t90 is 0.32 s even for a 30° step;
+- a 170° flip command does not finish in 0.6 s.
+
+`min_time_bound.py` (default `--rate_max=8 --acc_max=160`) now models the thrust direction as a
+unit-vector state with those limits. It solves a homotopy: relaxed → point mass → rate limit
+30, 15, 12, 10, 9, 8.5, 8 rad/s.
+
+| Rate limit | Lap |
+| --- | --- |
+| none | 2.25 s |
+| 30 / 15 rad/s | 2.31 s |
+| 12 rad/s | 2.42 s |
+| 10 rad/s | 2.60 s |
+| 8.5 rad/s | 2.59 s |
+| **8 rad/s (measured)** | **3.00 s** (legs 0.70, 0.53, 0.93, 0.43, 0.41; v_max 5.7 m/s) |
+
+The sequence is not monotonic (9 rad/s gave 3.04 s, worse than 8.5), so some stages ended in local
+optima. Each solution is a feasible trajectory of the model, so 3.0 s is an upper estimate of the
+model's optimum, and the model's optimum is probably between 2.6 and 3.0 s. The model is still optimistic:
+small rotations in the simulator are slower than the rate limit (t90 0.32 s at 30°), and the motors
+are assumed to change thrust instantly. **Practical limit: roughly 2.8–3.0 s.** The leaderboard top
+(3.27 s) is about 10 % above it and our mean (3.71 s) about 25 %.
+
+**Round 2** (`outputs/speed_chain2.sh`): critic re-initialized, smaller gate and lap rewards. Also
+`cont_theta90` (θ 90°, critic kept). All are 500M-step continuations of `night_cont_theta85`, with 100 official runs each:
+
+| Run | Success | Mean lap | Best |
+| --- | --- | --- | --- |
+| `r2_control` (critic reset, reward unchanged) | 95/100 | 3.709 s | 3.32 s |
+| `r2_g5l10_t0.1` (gate 5, lap 10, time 0.1) | 94/100 | 3.726 s | 3.36 s |
+| `r2_g5l10_t0.2` (gate 5, lap 10, time 0.2) | 91/100 | **3.671 s** | 3.36 s |
+| `cont_theta90` | 97/100 | 3.692 s | 3.36 s |
+| `r2_g2l5_t0.1b` (gate 2, lap 5, time 0.1) | 98/100 | 3.787 s | 3.48 s |
+
+The standard error is about 0.018 s per run, so `r2_g5l10_t0.2` (−0.04 s) is at the edge of noise
+and `cont_theta90` (−0.02 s) is within it. Resetting the critic by itself costs nothing (control
+3.709 s). This is the first reward change that trades reliability for speed, as intended. A
+longer run of it, or a stronger time penalty, is the next candidate. `r2_g2l5_t0.1` ran out of GPU memory at
+start (5 runs on the GPU); its rerun is `r2_g2l5_t0.1b`.
+
+The level-2 dynamics disturbance is resampled at every simulator step (white noise). Mass and inertia
+are randomized once per episode.
+
+**Reading of rounds 1–2.** Under discounting, collecting the future rewards one step earlier is
+worth about (1 − γ)·V. So the gate and lap rewards themselves pay for speed. At the same time,
+everything still ahead is lost in a crash. Shrinking them with time 0.1 removed speed incentive
+(gate 2 / lap 5: slower, 98 %). Shrinking them with time 0.2 shifted the balance toward speed
+(gate 5 / lap 10: faster, 91 %). The ratio of the time penalty to the value at risk is the lever.
+
+**Exploration noise** of the leaderboard policy (mean pre-tanh std along official laps): roll/pitch
+0.045/0.055 (about 4–5° of attitude noise), thrust 0.18 (about ±9 % of the thrust range per step).
+The policy is trained to survive this noise, but flies without it at deployment.
+
+**Start leg** (`outputs/debug/takeoff.py`, 64 official starts, `night_cont_theta85` and `r2_g5l10_t0.2`).
+The drone starts 1–3 cm above the ground and first drops about 2 cm while the motors spin up. Even an
+open-loop full-thrust command needs **0.20 s** to rise 1 cm. The policies need 0.23–0.25 s: they
+command 0.69–0.79 N from the first step and already pitch to about 60° (tilt about 40°) on the ground.
+So the takeoff costs at most about 0.05 s. The rest of the first leg (gate 0 at 0.94 s) is a deliberate
+brake: at about 4 m/s the policy pitches back 40–58° and drops to about 0.5 N, then crosses gate 0 at
+about 2.7 m/s (point-mass optimum: 4.2 m/s) to set up the tight turn into gate 1. The bound has
+no motor spin-up, so about 0.2 s should be added to it: **realistic floor about 3.0–3.2 s.**
+
+**Round 3 and noise runs (started 2026-11-09 14:51):**
+- `outputs/speed_chain3.sh`: gate 5, lap 10 with time 0.3 / 0.5 (critic reset), and
+  `r3_t0.2_long`, which continues `r2_g5l10_t0.2`; 1B steps each.
+- `outputs/noise_chain.sh`: `--noise_scale` 0.5 then 0.25 with entropy 0, from `night_cont_theta85`,
+  reward unchanged.
+- `--noise_scale` multiplies the sampling std (`NormalTanhDistribution(var_scale=...)`); the learned
+  std parameters and checkpoints are unchanged.
+
+**Learning-rate shock on continuation.** A `--continue_race` run starts a fresh Adam at the full policy and
+value learning rates (1e-4 / 3e-4). The parent run ended at 10 % of that (`--lr_decay_to=0.1`).
+- **Effect:** the 10× jump caused the early collapse seen in every round-1 run (success down to 58–77 %).
+  `noise0.5` fell to 14 % (halving the noise makes the same update relatively larger), and
+  `r3_t0.2_long` fell to 51 %. Both were stopped.
+- **Restarts** `noise0.5_lr` / `r3_t0.2_long_lr` use policy 2e-5, value 6e-5, decay to 0.5 (`outputs/lowlr_chain.sh`).
+  They hold 93–98 % success from the first evaluation.
+- **Rule:** start a continuation near the learning rate its parent ended with. Runs that re-initialize the
+  critic (`--continue_race=False`) freeze the policy for 10 iterations and dip much less.
+- **Consequence:** the round-1 results (all slower) were partly confounded by this shock.
+
+## Trunk and anneal stage (2026-11-09)
+
+The learning-rate decay is now a separate training stage, so a run's main checkpoint keeps the full
+learning rate and can serve as a branch point.
+- **Race stage:** with `--lr_decay_to=1.0` (the default) it trains at a constant learning rate and saves
+  `race_final.pkl`, the trunk/branch point.
+- **Anneal stage:** `--anneal_steps=N` (> 0) adds a stage `anneal`. It has the same reward and keeps the
+  critic. It starts with a linear warmup over `--anneal_warmup_iterations` (default 5) PPO iterations,
+  because the fresh Adam has no moment estimates. Then both learning rates decay linearly to
+  `--anneal_to` (default 0.1). It saves `anneal_final.pkl` and `anneal_config.json`;
+  export it with `export --stage=anneal`.
+- **Anneal only:** `--start_stage=anneal --start_params=<full-LR checkpoint> --anneal_steps=N` anneals
+  an existing checkpoint without further race training.
+- **Warmup on branches:** `--warmup_iterations` (default 0) adds the same warmup to `--continue_race`
+  branches.
+- **Schedule:** `optim.lr_schedule` composes freeze → warmup → constant or decay; it is unit-tested.
+
+**Workflow:**
+1. Trunk: constant learning rate.
+2. Experiment: branch from a trunk `race_final.pkl` at the trunk's learning rate (with a short warmup).
+3. Every arm, including the control, gets the same anneal stage before evaluation.
+
+Usable full-learning-rate checkpoints today: `cont_s3_theta85`, `race_v3_s3` (all later runs decayed).
+
+## Round 3 and noise results (2026-11-09)
+
+100 official runs each (standard error about 0.015 s):
+
+| Run | Change | Success | Mean lap | Best |
+| --- | --- | --- | --- | --- |
+| `night_cont_theta85` (reference) | – | 96/100 | 3.714 s | 3.32 s |
+| **`r3_t0.3`** | gate 5, lap 10, **time 0.3**, critic reset, 1B | **94/100** | **3.643 s** | 3.40 s |
+| `r3_t0.5` | gate 5, lap 10, time 0.5, critic reset, 1B | 33/100 | 3.685 s | 3.40 s |
+| `r3_t0.2_long_lr` | +1B on `r2_g5l10_t0.2` (low LR) | 95/100 | 3.663 s | 3.36 s |
+| `noise0.5_lr` | sampling noise × 0.5, entropy 0, low LR, 500M | 97/100 | 3.706 s | 3.38 s |
+| `noise0.25_lr` | sampling noise × 0.25, entropy 0, low LR, 500M | 98/100 | 3.728 s | 3.40 s |
+
+- **`r3_t0.3` is the best so far:** −0.07 s at nearly the same reliability, about 3.5 standard errors of
+  the difference.
+- **Time 0.5 overshoots, and the arithmetic shows why.** An official lap is about 180 steps, so the time cost
+  is 0.5 × 180 = 90 against 5 × 5 + 10 = 35 of gate and lap reward. Finishing (about −55) is worse than
+  crashing (−20), so crashing early becomes the better option. At time 0.3 finishing is worth about −19,
+  roughly the same as a crash. The time penalty can only rise further together with the crash penalty
+  (or the lap reward), keeping finishing clearly better than crashing.
+- **Longer training at time 0.2** adds nothing (3.663 vs 3.671 s).
+- **Less exploration noise gives no speed gain** (3.706 / 3.728 vs 3.714 s); success rose slightly.
+  Caveat: these runs used the low continuation LR (policy 2e-5). The eval lap stayed at about 3.70 s
+  throughout, so the policy barely changed. A test at the trunk LR would be more conclusive.

@@ -127,6 +127,15 @@ def test_reward_events_and_components():
     np.testing.assert_allclose(total[2], 10 + 50 - 0.05 - 0.01 + 1.5, atol=1e-5)
     np.testing.assert_allclose(total[1], -20 - 0.05 - 0.01, atol=1e-5)
     assert rewards.preset("race").progress == 0.0
+    np.testing.assert_allclose(comp["lap_bonus"], 0.0)  # default: no lap bonus
+
+
+def test_lap_bonus_pays_only_on_the_finishing_step():
+    ev = rewards.events(jnp.array([4, 4, 2]), jnp.array([5, 5, 3]), jnp.zeros(3, bool), n_seq=5)
+    cfg = rewards.preset("race", lap_bonus=20.0, lap_ref=4.0)
+    seconds = jnp.array([3.5, 4.2, 1.0])
+    _, comp = rewards.compute(cfg, ev, jnp.zeros((3, 3)), jnp.zeros(3), seconds)
+    np.testing.assert_allclose(comp["lap_bonus"], [10.0, -4.0, 0.0], atol=1e-5)
 
 
 def test_path_potential_penalizes_passing_beside_the_gate():
@@ -144,3 +153,26 @@ def test_path_potential_penalizes_passing_beside_the_gate():
     side_a, side_b = jnp.array([[1.8, 0.3, 1.0]]), jnp.array([[2.2, 0.3, 1.0]])
     gain = float(path.arc_progress(*args, side_a, side_b, lateral_weight=1.0)[0])
     assert gain == pytest.approx(0.4, abs=1e-2)
+
+
+def test_noise_scale_scales_only_the_sampling_std():
+    from lsy_drone_racing.control.rl_race.train import make_networks
+
+    params = jnp.concatenate([jnp.zeros(3), jnp.full(3, 0.5)])[None]
+    stds = [
+        make_networks(4, 3, noise_scale=s, distribution_type="tanh_normal")
+        .parametric_action_distribution.create_dist(params)
+        .scale
+        for s in (1.0, 0.5)
+    ]
+    np.testing.assert_allclose(stds[1], 0.5 * stds[0], rtol=1e-6)
+
+
+def test_lr_schedule_freeze_warmup_decay():
+    from lsy_drone_racing.control.rl_race.optim import lr_schedule
+
+    s = lr_schedule(1.0, freeze_steps=10, warmup_steps=10, decay_steps=100, final_lr_factor=0.1)
+    np.testing.assert_allclose([float(s(t)) for t in (0, 9, 15, 20, 70, 120, 500)],
+                               [0.0, 0.0, 0.5, 1.0, 0.55, 0.1, 0.1], atol=1e-6)
+    constant = lr_schedule(2.0)
+    assert float(constant(0)) == float(constant(10**6)) == 2.0

@@ -4,6 +4,11 @@ Stage ``pretrain``: reward ``dense_path`` (race reward + arc-length progress alo
 path), until the deterministic evaluation from the official start reaches ``switch_success``.
 Stage ``race``: reward ``race``; the critic is re-initialized and trained alone for
 ``critic_only_iterations`` PPO iterations, then the policy resumes with ``policy_lr_after_switch``.
+Stage ``anneal`` (optional, ``anneal_steps > 0``): continues the race stage with the same reward and
+both learning rates decaying linearly to ``anneal_to`` of their full value, after a short warmup.
+The race stage's ``race_final.pkl`` keeps the full-learning-rate policy as a branch point; the
+annealed policy is ``anneal_final.pkl`` (export with ``--stage=anneal``). ``--start_stage=anneal``
+anneals an existing full-learning-rate checkpoint.
 
 Usage::
 
@@ -95,6 +100,25 @@ def load_params(source: str | Path) -> Any:
     return pickle.loads(Path(source).read_bytes())
 
 
+def make_networks(observation_size: Any, action_size: int, noise_scale: float = 1.0, **kwargs: Any):
+    """Brax PPO networks whose exploration std is multiplied by ``noise_scale``.
+
+    The learned std parameters are unchanged (checkpoints stay compatible); only the sampling
+    distribution is scaled, consistently for actions, log-probabilities and entropy. The deployed
+    controller uses the mean action and is unaffected.
+    """
+    import dataclasses
+
+    from brax.training import distribution
+    from brax.training.agents.ppo import networks as ppo_networks
+
+    nets = ppo_networks.make_ppo_networks(observation_size, action_size, **kwargs)
+    if noise_scale == 1.0:
+        return nets
+    scaled = distribution.NormalTanhDistribution(event_size=action_size, var_scale=noise_scale)
+    return dataclasses.replace(nets, parametric_action_distribution=scaled)
+
+
 def train(
     run_name: str | None = None,
     output_root: str | None = None,
@@ -119,8 +143,16 @@ def train(
     continue_race: bool = False,
     start_step: int = 0,
     lr_decay_to: float = 1.0,
+    warmup_iterations: int = 0,
+    anneal_steps: int = 0,
+    anneal_to: float = 0.1,
+    anneal_warmup_iterations: int = 5,
     race_time: float | None = None,
     race_crash: float | None = None,
+    race_gate: float | None = None,
+    race_lap: float | None = None,
+    race_lap_bonus: float | None = None,
+    race_lap_ref: float | None = None,
     # PPO (Brax): one iteration = num_envs * unroll_length * (batch * minibatches / num_envs).
     num_envs: int = 8192,
     unroll_length: int = 32,
@@ -130,6 +162,7 @@ def train(
     learning_rate: float = 3e-4,
     policy_lr_after_switch: float = 1e-4,
     entropy_cost: float = 5e-3,
+    noise_scale: float = 1.0,
     discounting: float = 0.99,
     gae_lambda: float = 0.95,
     clipping_epsilon: float = 0.2,
@@ -147,10 +180,12 @@ def train(
     """Run the staged training and return the run directory."""
     from brax.training.agents.ppo import networks as ppo_networks
 
-    if start_stage not in {"pretrain", "race"}:
-        raise ValueError("start_stage must be pretrain or race")
-    if start_stage == "race" and start_params is None:
-        raise ValueError("start_stage=race needs start_params from a pre-training run")
+    if start_stage not in {"pretrain", "race", "anneal"}:
+        raise ValueError("start_stage must be pretrain, race or anneal")
+    if start_stage != "pretrain" and start_params is None:
+        raise ValueError(f"start_stage={start_stage} needs start_params")
+    if start_stage == "anneal" and anneal_steps <= 0:
+        raise ValueError("start_stage=anneal needs anneal_steps > 0")
     if activation not in ACTIVATIONS:
         raise ValueError(f"activation must be one of {ACTIVATIONS}")
     if (batch_size * num_minibatches) % num_envs:
@@ -169,7 +204,8 @@ def train(
         "distribution": "tanh_normal",
     }
     network_factory = functools.partial(
-        ppo_networks.make_ppo_networks,
+        make_networks,
+        noise_scale=noise_scale,
         policy_hidden_layer_sizes=tuple(policy_layers),
         value_hidden_layer_sizes=tuple(value_layers),
         activation=getattr(jax.nn, activation),
@@ -200,13 +236,22 @@ def train(
     pretrain_reward = {key: value for key, value in overrides.items() if value is not None}
     race_reward = {
         key: value
-        for key, value in {"time": race_time, "crash": race_crash}.items()
+        for key, value in {
+            "time": race_time,
+            "crash": race_crash,
+            "gate": race_gate,
+            "lap": race_lap,
+            "lap_bonus": race_lap_bonus,
+            "lap_ref": race_lap_ref,
+        }.items()
         if value is not None
     }
     step_offset = start_step
     params = load_params(start_params) if start_params else None
     stage_log: list[dict[str, Any]] = []
-    stages = ["pretrain", "race"] if start_stage == "pretrain" else ["race"]
+    stages = {"pretrain": ["pretrain", "race"], "race": ["race"], "anneal": []}[start_stage]
+    if anneal_steps > 0:
+        stages.append("anneal")
     try:
         for stage in stages:
             cfg = env_config(
@@ -223,7 +268,9 @@ def train(
             )
             env = RaceEnv(num_envs, cfg, device=device, seed=seed)
             eval_env = RaceEnv(num_eval_envs, eval_cfg, device=device, seed=seed + 10_000)
-            steps = pretrain_max_steps if stage == "pretrain" else race_steps
+            steps = {"pretrain": pretrain_max_steps, "race": race_steps, "anneal": anneal_steps}[
+                stage
+            ]
             (run_dir / f"{stage}_config.json").write_text(
                 json.dumps(
                     {
@@ -253,7 +300,7 @@ def train(
                 is_eval = "eval/episode_reward" in values
                 if is_eval:
                     values.update(eval_summary(values))
-                values["stage"] = 0.0 if stage == "pretrain" else 1.0
+                values["stage"] = {"pretrain": 0.0, "race": 1.0, "anneal": 2.0}[stage]
                 if wandb_run is not None:
                     wandb_run.log(values, step=step_offset + step)
                 if not is_eval:
@@ -275,13 +322,26 @@ def train(
             updates = iteration_updates(num_updates_per_batch, num_minibatches)
             transitions = batch_size * num_minibatches * unroll_length
             decay = -(-steps // transitions) * updates  # optimizer steps of this stage
-            if stage == "race" and params is not None and continue_race:
-                # Continue a race-stage run: keep the critic, no freeze.
+            if stage == "anneal":
+                # Same reward, critic kept: short warmup (fresh Adam), then decay to anneal_to.
+                warm = anneal_warmup_iterations * updates
                 kwargs["optimizer_override"] = separate_lr(
                     policy_lr=policy_lr_after_switch,
                     value_lr=learning_rate,
                     max_grad_norm=max_grad_norm,
-                    decay_steps=decay,
+                    warmup_steps=warm,
+                    decay_steps=max(decay - warm, 1),
+                    final_lr_factor=anneal_to,
+                )
+            elif stage == "race" and params is not None and continue_race:
+                # Continue a race-stage run: keep the critic, no freeze.
+                warm = warmup_iterations * updates
+                kwargs["optimizer_override"] = separate_lr(
+                    policy_lr=policy_lr_after_switch,
+                    value_lr=learning_rate,
+                    max_grad_norm=max_grad_norm,
+                    warmup_steps=warm,
+                    decay_steps=max(decay - warm, 0),
                     final_lr_factor=lr_decay_to,
                 )
             elif stage == "race" and params is not None:

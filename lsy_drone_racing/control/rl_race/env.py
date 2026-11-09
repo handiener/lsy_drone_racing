@@ -183,15 +183,18 @@ class RaceEnv(Env):
             raw["pos"],
             lateral_weight=self.cfg.reward.path_lateral,
         )
-        reward, components = rewards.compute(self.cfg.reward, event, raw["ang_vel"], progress)
+        official = state.info["official"]
+        seconds = data.steps.astype(jnp.float32) / self.freq
+        lap_seconds = jnp.where(official > 0, seconds, self.cfg.reward.lap_ref)
+        reward, components = rewards.compute(
+            self.cfg.reward, event, raw["ang_vel"], progress, lap_seconds
+        )
 
         done = terminated | truncated | event["finished"]
         timeout = truncated & ~terminated & ~event["finished"]
-        official = state.info["official"]
         donef = done.astype(jnp.float32)
         finishedf = event["finished"].astype(jnp.float32)
         steps_taken = data.steps.astype(jnp.float32)
-        seconds = steps_taken / self.freq
         metrics = {
             "gates": event["gates"].astype(jnp.float32),
             "finished": finishedf,
