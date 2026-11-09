@@ -179,3 +179,68 @@ iterations and is logged to W&B. The official `pixi run evaluate` stays the fina
   them with `jax.random.wrap_key_data`.
 - **Brax eval** reads `info["steps"]`. The adapter provides it as the episode length including the
   current step.
+
+## Current state and next steps (2026-11-09)
+
+**On the leaderboard** (`main`, commit `0006646`): `night_cont_theta85` with
+`controller.file = "rl_race_controller.py"`.
+- Official simulator, 100 runs: 96/100 successful, mean 3.714 s, best 3.32 s.
+- `scripts/evaluate.py`: 17/20, mean 3.71 s.
+- Top of the leaderboard: 3.27 s.
+
+**How it was trained** (seed 3, 3.85B cumulative steps):
+1. `race_v3_s3`: `dense_path` pre-training (crash 20, time 0.2) until 30 % success, then the race reward
+   for 1B steps (θ 70°, 8192 envs).
+2. `cont_s3_theta85`: +300M steps with θ 85°.
+3. `night_cont_theta85`: +1B steps with official starts only, 16384 envs, batch 2048 × 32,
+   entropy 1e-3, LR decay to 10 %.
+
+**Other runs**, each 100 official runs:
+
+| Run | Description | Success | Mean lap |
+| --- | --- | --- | --- |
+| `night_cont_theta85_2` | +1B more at lower LR; plateaued | 96/100 | 3.719 s |
+| `night_g3_paper_ft` | 3 gates, paper nets, γ 0.995, race time 0.1, same fine-tuning | **100/100** | 3.785 s |
+
+The effects of the four changes in `night_g3_paper_ft` are not separated.
+
+**Single-change effects**, each a 300M-step continuation of seed 3 starting at 4.04 s:
+
+| Change | Lap time |
+| --- | --- |
+| entropy 1e-3 | 3.91 s |
+| θ 85° | 3.92 s |
+| LR decay | 3.97 s |
+| time penalty 0.1 | 4.00 s |
+| baseline | 3.99 s |
+
+The fine-tuning recipe above gained another ~0.2 s.
+
+**Locations** (all under `rl_race/outputs/`, git-ignored):
+- runs: `<run>/` with `{stage}_config.json` and `checkpoints/{stage}_{final,latest}.pkl`;
+- exports: `exports/<run>`;
+- logs: `logs/`;
+- 100-run evaluations: `eval100/`;
+- overnight scripts: `night_chain*.sh`;
+- videos: `videos/race_v3_s3/`.
+
+W&B project `lsy-drone-racing`, groups `rl-race`, `rl-race-cont`, `rl-race-night`.
+
+**Gotchas:**
+- Evaluate in a git worktree only with `PYTHONPATH=$PWD`; otherwise the main checkout's package and
+  model are used.
+- `deploy_model/config.json` needs the `.gitignore` exception (on `main`).
+- `scripts/evaluate.py` always uses `level2.toml`'s controller; for other controllers use
+  `scripts/sim.py --controller=...`.
+
+**Next steps (ideas, not started):**
+1. **Trade reliability for speed.** The leaderboard only needs ≥ 50 % success; the policy succeeds
+   96 % of the time and its best laps already reach 3.3 s. Candidates: a larger race time penalty
+   together with γ 0.995, a smaller race crash penalty, or a lower entropy bonus. These change the
+   race reward, so they need the user's approval.
+2. **Separate the 3-gate run's changes** (lookahead, paper nets, γ 0.995, time 0.1): which ones buy
+   reliability (100/100), and which cost ~0.07 s?
+3. **Larger θ_max** (90°, the interface maximum) for the two tight turns (gate 1 → 2, gate 4 → 2),
+   where 85° still saturates.
+4. Phase 2 (IPPO): the env keeps the drone axis of `MultiDroneRacing-v0`; flatten agents into the
+   batch and use `value_obs_key` for a privileged critic.
