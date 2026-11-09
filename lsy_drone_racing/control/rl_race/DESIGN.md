@@ -240,7 +240,8 @@ W&B project `lsy-drone-racing`, groups `rl-race`, `rl-race-cont`, `rl-race-night
    race reward, so they need the user's approval.
 2. **Separate the 3-gate run's changes** (lookahead, paper nets, γ 0.995, time 0.1): which ones buy
    reliability (100/100), and which cost ~0.07 s?
-3. **Larger θ_max** (90°, the interface maximum) for the two tight turns (gate 1 → 2, gate 4 → 2),
-   where 85° still saturates.
+3. **Larger θ_max** (90°, the interface maximum) for the two tight turns (gate 1 → 2, gate 4 → 2).
+   At 70° the angle saturated in ~20 % of their steps; saturation at 85° has not been measured yet
+   (`outputs/debug/saturation.py`).
 4. Phase 2 (IPPO): the env keeps the drone axis of `MultiDroneRacing-v0`; flatten agents into the
    batch and use `value_obs_key` for a privileged critic.
