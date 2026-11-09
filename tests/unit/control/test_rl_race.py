@@ -176,3 +176,23 @@ def test_lr_schedule_freeze_warmup_decay():
                                [0.0, 0.0, 0.5, 1.0, 0.55, 0.1, 0.1], atol=1e-6)
     constant = lr_schedule(2.0)
     assert float(constant(0)) == float(constant(10**6)) == 2.0
+
+
+def test_separate_lr_applies_the_schedule_to_updates():
+    """With a constant gradient, Adam's update size equals the scheduled learning rate."""
+    from brax.training.agents.ppo.losses import PPONetworkParams
+
+    from lsy_drone_racing.control.rl_race.optim import separate_lr
+
+    params = PPONetworkParams(policy={"w": jnp.zeros(2)}, value={"w": jnp.zeros(2)})
+    grads = PPONetworkParams(policy={"w": jnp.ones(2)}, value={"w": jnp.ones(2)})
+    opt = separate_lr(1e-4, 3e-4, max_grad_norm=None, warmup_steps=10, decay_steps=100,
+                      final_lr_factor=0.1)
+    state = opt.init(params)
+    sizes = []
+    for _ in range(130):
+        upd, state = opt.update(grads, state, params)
+        sizes.append((float(-upd.policy["w"][0]), float(-upd.value["w"][0])))
+    for step, (pol, val) in {5: (0.5e-4, 1.5e-4), 10: (1e-4, 3e-4), 60: (0.55e-4, 1.65e-4),
+                             129: (1e-5, 3e-5)}.items():
+        np.testing.assert_allclose(sizes[step], (pol, val), rtol=1e-3)

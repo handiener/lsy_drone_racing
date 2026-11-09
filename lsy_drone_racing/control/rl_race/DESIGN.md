@@ -447,3 +447,55 @@ Usable full-learning-rate checkpoints today: `cont_s3_theta85`, `race_v3_s3` (al
 - **Less exploration noise gives no speed gain** (3.706 / 3.728 vs 3.714 s); success rose slightly.
   Caveat: these runs used the low continuation LR (policy 2e-5). The eval lap stayed at about 3.70 s
   throughout, so the policy barely changed. A test at the trunk LR would be more conclusive.
+
+## From-scratch trunk (2026-11-09, RTX 5080)
+
+`outputs/trunk_chain.sh` / `trunk_chain_s23.sh`. Pre-training as `race_v3`, then gate 5 / lap 10 / time
+0.3 / crash 20 at a constant learning rate for 2.5B race steps, θ 85°, 8192 envs, 50 % official
+starts, entropy 5e-3. The first attempt (16:18) died when the previous PC shut down
+(`trunk_t0.3_s1_aborted_pcdown`) and was restarted at 17:00. 100 official runs of each `race_final.pkl`
+(full learning rate, no fine-tuning):
+
+| Seed | Success | Mean lap | Median | Best |
+| --- | --- | --- | --- | --- |
+| 1 | 87/100 | 3.688 s | 3.64 s | **3.24 s** |
+| 2 | 86/100 | **3.639 s** | 3.64 s | 3.28 s |
+| 3 | 85/100 | 3.702 s | 3.70 s | 3.30 s |
+
+- **The recipe holds across seeds:** 3.64–3.70 s, 85–87 % success.
+- **No fine-tuning needed for the trunk's speed.** Without decay or official-only fine-tuning, the trunk
+  already matches the best fine-tuned policy (`r3_t0.3`, 3.643 s, 94 %). It trades about 8 points of
+  success, as intended by time 0.3.
+- **Best single laps** (3.24–3.30 s) reach the leaderboard top (3.268 s).
+- Seed 2 is annealed for 300M steps with official starts only (`outputs/anneal_best.sh`,
+  run `trunk_t0.3_s2_anneal`).
+
+**Anneal of seed 2** (`trunk_t0.3_s2_anneal`, 300M steps, official starts only, warmup 5 iterations,
+LR decay to 10 %, otherwise the trunk's settings; 9 min of training): 86/100, **mean 3.616 s**
+(± 0.019), median 3.62 s, best 3.22 s.
+- **Gain over its trunk:** −0.023 s (3.639 → 3.616), about one standard error of the difference, at equal success.
+- **During training:** the evaluation lap fell steadily (3.69 → 3.60 s) and success held at 84–89 %.
+  The warmup prevented the learning-rate shock.
+- **Smaller than the night run's −0.2 s.** That run also lowered the entropy to 1e-3, used 16384 envs,
+  a batch of 2048 and 1B steps, and started from a slower policy (4.04 s).
+- **Fastest policy so far:** 3.616 s mean, best lap 3.22 s, below the leaderboard top of 3.268 s.
+
+**1B anneal of all seeds** (`outputs/anneal_long.sh`, `trunk_t0.3_s{1,2,3}_anneal1b`): 1B steps from each
+full-LR `race_final.pkl`, official starts only, entropy 1e-3, warmup 5 iterations, LR 1e-4 / 3e-4 →
+1e-5 / 3e-5. 100 official runs each:
+
+| Seed | Trunk (full LR) | Anneal 300M | **Anneal 1B** | Median | Best |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 87 %, 3.688 s | – | 81 %, **3.584 s** | 3.54 s | **3.16 s** |
+| 2 | 86 %, 3.639 s | 86 %, 3.616 s | 87 %, **3.591 s** | 3.54 s | 3.24 s |
+| 3 | 85 %, 3.702 s | – | 79 %, **3.558 s** | 3.54 s | 3.18 s |
+
+- **Every seed got faster:** −0.05 to −0.14 s against its trunk. The seed spread shrank from
+  3.64–3.70 s to 3.56–3.59 s, and all medians are 3.54 s.
+- **Reliability:** seeds 1 and 3 traded 6 points of success, while seed 2 stayed at 87 %.
+- **Exploration noise:** `policy_dist_min_std` falls from about 0.012 to about 0.001–0.002 during the anneal
+  (Brax floor 0.001). With entropy 1e-3 the anneal turns exploration almost off by itself.
+- **Seed 2, 1B vs 300M** (3.591 vs 3.616 s): the longer anneal with lower entropy gains a further 0.025 s.
+- **Logging:** Brax's `training/learning_rate` logs the constant `--learning_rate` argument, not the
+  schedule. `train.py` now logs the actual rates as `lr/policy` and `lr/value` (not yet in these runs).
+  `test_separate_lr_applies_the_schedule_to_updates` confirms that the optimizer applies the schedule.

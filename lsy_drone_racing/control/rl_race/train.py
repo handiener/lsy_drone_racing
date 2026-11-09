@@ -36,7 +36,7 @@ from lsy_drone_racing.control.rl_race import rewards
 from lsy_drone_racing.control.rl_race.actions import ActionConfig
 from lsy_drone_racing.control.rl_race.env import EnvConfig, RaceEnv
 from lsy_drone_racing.control.rl_race.observations import ObsConfig
-from lsy_drone_racing.control.rl_race.optim import iteration_updates, separate_lr
+from lsy_drone_racing.control.rl_race.optim import iteration_updates, lr_schedules, separate_lr
 from lsy_drone_racing.control.rl_race.starts import StartConfig
 
 RL_DIR = Path(__file__).resolve().parent
@@ -290,6 +290,8 @@ def train(
             )
             latest: dict[str, Any] = {}
             started = time.time()
+            # Actual learning rates (Brax's training/learning_rate logs the constant argument only).
+            schedule: dict[str, Any] = {"policy": lambda _: learning_rate, "value": lambda _: learning_rate}
 
             def keep_params(step: int, _make_policy: Any, current: Any, stage: str = stage) -> None:
                 latest["step"], latest["params"] = step, current
@@ -301,6 +303,9 @@ def train(
                 if is_eval:
                     values.update(eval_summary(values))
                 values["stage"] = {"pretrain": 0.0, "race": 1.0, "anneal": 2.0}[stage]
+                opt_step = (step // transitions) * updates
+                values["lr/policy"] = float(schedule["policy"](opt_step))
+                values["lr/value"] = float(schedule["value"](opt_step))
                 if wandb_run is not None:
                     wandb_run.log(values, step=step_offset + step)
                 if not is_eval:
@@ -322,39 +327,40 @@ def train(
             updates = iteration_updates(num_updates_per_batch, num_minibatches)
             transitions = batch_size * num_minibatches * unroll_length
             decay = -(-steps // transitions) * updates  # optimizer steps of this stage
+            lr_args: dict[str, Any] | None = None
             if stage == "anneal":
                 # Same reward, critic kept: short warmup (fresh Adam), then decay to anneal_to.
                 warm = anneal_warmup_iterations * updates
-                kwargs["optimizer_override"] = separate_lr(
-                    policy_lr=policy_lr_after_switch,
-                    value_lr=learning_rate,
-                    max_grad_norm=max_grad_norm,
-                    warmup_steps=warm,
-                    decay_steps=max(decay - warm, 1),
-                    final_lr_factor=anneal_to,
-                )
+                lr_args = {
+                    "policy_lr": policy_lr_after_switch,
+                    "value_lr": learning_rate,
+                    "warmup_steps": warm,
+                    "decay_steps": max(decay - warm, 1),
+                    "final_lr_factor": anneal_to,
+                }
             elif stage == "race" and params is not None and continue_race:
                 # Continue a race-stage run: keep the critic, no freeze.
                 warm = warmup_iterations * updates
-                kwargs["optimizer_override"] = separate_lr(
-                    policy_lr=policy_lr_after_switch,
-                    value_lr=learning_rate,
-                    max_grad_norm=max_grad_norm,
-                    warmup_steps=warm,
-                    decay_steps=max(decay - warm, 0),
-                    final_lr_factor=lr_decay_to,
-                )
+                lr_args = {
+                    "policy_lr": policy_lr_after_switch,
+                    "value_lr": learning_rate,
+                    "warmup_steps": warm,
+                    "decay_steps": max(decay - warm, 0),
+                    "final_lr_factor": lr_decay_to,
+                }
             elif stage == "race" and params is not None:
                 kwargs["restore_value_fn"] = False  # critic re-initialized for the new reward
                 freeze = critic_only_iterations * updates
-                kwargs["optimizer_override"] = separate_lr(
-                    policy_lr=policy_lr_after_switch,
-                    value_lr=learning_rate,
-                    max_grad_norm=max_grad_norm,
-                    freeze_policy_steps=freeze,
-                    decay_steps=max(decay - freeze, 0),
-                    final_lr_factor=lr_decay_to,
-                )
+                lr_args = {
+                    "policy_lr": policy_lr_after_switch,
+                    "value_lr": learning_rate,
+                    "freeze_policy_steps": freeze,
+                    "decay_steps": max(decay - freeze, 0),
+                    "final_lr_factor": lr_decay_to,
+                }
+            if lr_args is not None:
+                kwargs["optimizer_override"] = separate_lr(max_grad_norm=max_grad_norm, **lr_args)
+                schedule["policy"], schedule["value"] = lr_schedules(**lr_args)
             switched = False
             try:
                 _, params, _ = ppo.train(

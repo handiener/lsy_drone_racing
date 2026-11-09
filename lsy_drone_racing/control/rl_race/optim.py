@@ -52,6 +52,20 @@ def lr_schedule(
     return optax.join_schedules(parts, boundaries=boundaries)
 
 
+def lr_schedules(
+    policy_lr: float,
+    value_lr: float,
+    freeze_policy_steps: int = 0,
+    decay_steps: int = 0,
+    final_lr_factor: float = 1.0,
+    warmup_steps: int = 0,
+) -> tuple[optax.Schedule, optax.Schedule]:
+    """Policy and value learning-rate schedules of ``separate_lr`` (also used for logging)."""
+    policy = lr_schedule(policy_lr, freeze_policy_steps, warmup_steps, decay_steps, final_lr_factor)
+    value = lr_schedule(value_lr, 0, warmup_steps, decay_steps, final_lr_factor)
+    return policy, value
+
+
 def separate_lr(
     policy_lr: float,
     value_lr: float,
@@ -68,10 +82,9 @@ def separate_lr(
     restart has no moment estimates) and finally, with ``decay_steps > 0``, decay linearly to
     ``final_lr_factor`` times their initial value over ``decay_steps`` optimizer steps.
     """
-    policy_schedule = lr_schedule(
-        policy_lr, freeze_policy_steps, warmup_steps, decay_steps, final_lr_factor
+    policy_schedule, value_schedule = lr_schedules(
+        policy_lr, value_lr, freeze_policy_steps, decay_steps, final_lr_factor, warmup_steps
     )
-    value_schedule = lr_schedule(value_lr, 0, warmup_steps, decay_steps, final_lr_factor)
     per_network = optax.multi_transform(
         {"policy": optax.adam(policy_schedule), "value": optax.adam(value_schedule)}, _labels
     )
