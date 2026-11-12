@@ -34,3 +34,4 @@ acados/
 /lsy_drone_racing/control/rl_single_l2/outputs/
 /lsy_drone_racing/control/rl_race/outputs/
 !/lsy_drone_racing/control/rl_single_l2/deploy_model/*.json
+!/lsy_drone_racing/control/rl_race/deploy_model/*.json

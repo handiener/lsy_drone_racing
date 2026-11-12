@@ -1,0 +1,32 @@
+{
+  "obs": {
+    "n_gates": 2,
+    "n_obstacles": 4
+  },
+  "action": {
+    "theta_max_deg": 85,
+    "thrust_min": 0.08545052260160446,
+    "thrust_max": 0.800000011920929
+  },
+  "network": {
+    "policy_layers": [
+      256,
+      256,
+      256
+    ],
+    "value_layers": [
+      256,
+      256,
+      256,
+      256
+    ],
+    "activation": "swish",
+    "distribution": "tanh_normal"
+  },
+  "freq": 50,
+  "source": {
+    "run_dir": "/u/halle/dieh/home_at/lsy_drone_racing/lsy_drone_racing/control/rl_race/outputs/night_cont_theta85",
+    "stage": "race",
+    "checkpoint": "final"
+  }
+}
