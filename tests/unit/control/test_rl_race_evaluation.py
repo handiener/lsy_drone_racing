@@ -1,7 +1,8 @@
 """Evaluation ranking is a reporting objective, never the training reward."""
 
 import pytest
-from lsy_drone_racing.control.rl_race.evaluation import ranking_score, evaluate
+
+from lsy_drone_racing.control.rl_race.evaluation import evaluate, ranking_score
 
 
 def test_ranking_eligibility_and_no_success():

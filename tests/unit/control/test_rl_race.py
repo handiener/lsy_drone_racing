@@ -237,6 +237,7 @@ def test_thrust_fraction_config_and_physical_bounds():
 
 def test_network_config_factory_preserves_brax_networks():
     import jax
+
     from lsy_drone_racing.control.rl_race.network import NetworkConfig, make_networks
 
     cfg = NetworkConfig((32, 32), (32,), "swish")

@@ -1,6 +1,7 @@
 """Sweep adapter runs one trial and attaches reproducible outputs without network calls."""
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -12,14 +13,15 @@ from lsy_drone_racing.control.rl_race import train as training
 class WandbSummary(dict):
     """Match W&B's mapping-only update signature."""
 
-    def update(self, values):
+    def update(self, values: dict) -> None:
+        """Update summary values using W&B's mapping-only API."""
         super().update(values)
 
 
 @pytest.mark.parametrize("budget,uploaded", [(50, True), (1e-12, False)])
 @pytest.mark.parametrize("grouped", [False, True])
 def test_trial_forwards_config_and_publishes_final_files(
-    monkeypatch, tmp_path, budget, uploaded, grouped
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, budget: float, uploaded: bool, grouped: bool
 ):
     calls = {}
     checkpoint = tmp_path / "race_final.pkl"
@@ -35,14 +37,14 @@ def test_trial_forwards_config_and_publishes_final_files(
     (tmp_path / "stages.json").write_text("[]")
 
     def train(
-        seed=0,
-        policy_layers=(256,),
-        run_name=None,
-        wandb_project=None,
-        output_root=None,
-        roll_limit_deg=None,
-        pitch_limit_deg=None,
-    ):
+        seed: int = 0,
+        policy_layers: tuple[int, ...] = (256,),
+        run_name: str | None = None,
+        wandb_project: str | None = None,
+        output_root: str | None = None,
+        roll_limit_deg: float | None = None,
+        pitch_limit_deg: float | None = None,
+    ) -> str:
         calls.update(seed=seed, policy_layers=policy_layers, run_name=run_name)
         assert roll_limit_deg == pitch_limit_deg == 75
         assert output_root.endswith("sweeps/standalone/runs")
@@ -89,7 +91,7 @@ def test_trial_forwards_config_and_publishes_final_files(
     assert run.summary["training_complete"] and finished == [0]
 
 
-def test_trial_failure_is_reported_to_wandb(monkeypatch, tmp_path):
+def test_trial_failure_is_reported_to_wandb(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     finished = []
     run = SimpleNamespace(
         config={},
@@ -100,7 +102,11 @@ def test_trial_failure_is_reported_to_wandb(monkeypatch, tmp_path):
     monkeypatch.setenv("WANDB_DIR", str(tmp_path))
     monkeypatch.setattr(sweep.wandb, "init", lambda **kwargs: run)
 
-    def broken_train(output_root=None, run_name=None, wandb_project=None):
+    def broken_train(
+        output_root: str | None = None,
+        run_name: str | None = None,
+        wandb_project: str | None = None,
+    ):
         raise RuntimeError("training or evaluation failed")
 
     monkeypatch.setattr(training, "train", broken_train)
@@ -109,13 +115,11 @@ def test_trial_failure_is_reported_to_wandb(monkeypatch, tmp_path):
     assert finished == [1]
 
 
-def test_machine_directories_are_isolated(monkeypatch, tmp_path):
+def test_machine_directories_are_isolated(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.setattr(sweep, "RL_DIR", tmp_path)
     a = sweep.machine_environment("9-3-2")
     b = sweep.machine_environment("9-3-3")
     for key in ("WANDB_DIR", "WANDB_CACHE_DIR", "WANDB_DATA_DIR", "WANDB_ARTIFACT_DIR"):
-        from pathlib import Path
-
         assert a[key] != b[key]
         assert Path(a[key]).is_dir()
     assert a["RL_RACE_MACHINE"] == "9-3-2"
@@ -123,14 +127,14 @@ def test_machine_directories_are_isolated(monkeypatch, tmp_path):
         sweep.machine_environment("../../escape")
 
 
-def test_default_entrypoint_runs_assigned_trial(monkeypatch):
+def test_default_entrypoint_runs_assigned_trial(monkeypatch: pytest.MonkeyPatch):
     calls = []
     monkeypatch.setattr(sweep, "run_trial", lambda: calls.append(True))
     sweep.main([])
     assert calls == [True]
 
 
-def test_launcher_preserves_machine_and_timeout(monkeypatch, tmp_path):
+def test_launcher_preserves_machine_and_timeout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.setattr(sweep, "RL_DIR", tmp_path)
     calls = []
     monkeypatch.setattr(sweep.subprocess, "call", lambda cmd, **kw: calls.append((cmd, kw)) or 0)
@@ -145,7 +149,7 @@ def test_launcher_preserves_machine_and_timeout(monkeypatch, tmp_path):
     assert options["env"]["RL_RACE_MACHINE"] == "9-3-2"
 
 
-def test_create_sweep_resolves_yaml(monkeypatch, tmp_path):
+def test_create_sweep_resolves_yaml(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.setattr(sweep, "RL_DIR", tmp_path)
     calls = []
     monkeypatch.setattr(sweep.subprocess, "call", lambda cmd, **kw: calls.append(cmd) or 0)
@@ -161,7 +165,7 @@ def test_create_sweep_resolves_yaml(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("args", [["--machine", "9-3-2"], ["--sweep", "team/project/id"]])
-def test_incomplete_launcher_cannot_start_a_trial(args):
+def test_incomplete_launcher_cannot_start_a_trial(args: list[str]):
     with pytest.raises(SystemExit) as result:
         sweep.main(args)
     assert result.value.code == 2

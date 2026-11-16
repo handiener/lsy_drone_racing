@@ -15,7 +15,7 @@
   "action": {
     "roll_limit_deg": 80,
     "pitch_limit_deg": 80,
-    "yaw_limit_deg": 80,
+    "yaw_limit_deg": 70,
     "thrust_min": 0.08545052260160446,
     "thrust_max": 0.800000011920929
   },
@@ -36,7 +36,7 @@
   },
   "freq": 50,
   "source": {
-    "run_dir": "/u/halle/zshiy/home_at/projects/lsy_drone_racing/lsy_drone_racing/control/rl_race/outputs/sweeps/rc4jm6ou/runs/gp7hc1v3_s1",
+    "run_dir": "/u/halle/zshiy/home_at/projects/lsy_drone_racing/lsy_drone_racing/control/rl_race/outputs/sweeps/rc4jm6ou/runs/1u3vhuhn_s1",
     "stage": "race",
     "checkpoint": "final"
   }

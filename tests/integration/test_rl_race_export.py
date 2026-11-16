@@ -49,7 +49,8 @@ def test_controller_forward_matches_brax_deterministic_policy(tmp_path: Path):
         serialization.msgpack_serialize(policy_arrays(params))
     )
     (tmp_path / "config.json").write_text(
-        '{"format_version": 2, "action_order": ["roll", "pitch", "yaw", "thrust"], "action_dim": 4, "observation_dim": 49}'
+        '{"format_version": 2, "action_order": ["roll", "pitch", "yaw", "thrust"], '
+        '"action_dim": 4, "observation_dim": 49}'
     )
     _, arrays = load_policy(tmp_path)
     ours = policy_mean_action(jax.tree.map(jnp.asarray, arrays), obs, "swish")
@@ -74,14 +75,14 @@ def test_controller_never_ends_episode_early():
     assert RaceController.step_callback(None, None, {}, 0.0, False, False, {}) is False
 
 
-def test_old_export_rejected_explicitly(tmp_path):
+def test_old_export_rejected_explicitly(tmp_path: Path):
     (tmp_path / "config.json").write_text('{"action_dim": 3}')
     with pytest.raises(ValueError, match="Incompatible export"):
         load_policy(tmp_path)
 
 
 @pytest.mark.parametrize("parent", [False, True])
-def test_export_cannot_delete_source_run(tmp_path, parent):
+def test_export_cannot_delete_source_run(tmp_path: Path, parent: bool):
     from lsy_drone_racing.control.rl_race.export import export
 
     run = tmp_path / "run"
