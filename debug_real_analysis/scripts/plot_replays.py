@@ -6,6 +6,7 @@ import argparse
 import json
 
 from paths import OUT
+from presets import PRESETS, REFERENCE_PRESET
 from rank import REALS, describe
 import numpy as np
 import matplotlib
@@ -14,8 +15,9 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 
-def read_replay(scene, preset):
-    path = OUT / f"reproduced_{scene}_{preset}.json"
+def read_replay(scene, preset, seed=0):
+    seed_suffix = f"_seed{seed}" if seed else ""
+    path = OUT / f"reproduced_{scene}_{preset}{seed_suffix}.json"
     if not path.is_file():
         raise FileNotFoundError(
             f"Missing {path}. First run reproduce.py --preset {preset} --scene {scene} "
@@ -35,10 +37,15 @@ def read_replay(scene, preset):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scene", choices=["113735", "115247"], default="113735")
-    parser.add_argument("--preset", choices=["paired", "input_match", "minimal"], default="paired")
+    parser.add_argument(
+        "--preset",
+        choices=[name for name in PRESETS if name != "baseline"],
+        default=REFERENCE_PRESET,
+    )
+    parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
-    baseline = read_replay(args.scene, "baseline")
-    disturbed = read_replay(args.scene, args.preset)
+    baseline = read_replay(args.scene, "baseline", args.seed)
+    disturbed = read_replay(args.scene, args.preset, args.seed)
     fig, axes = plt.subplots(2, 3, figsize=(13, 7))
     for arrays, color, label in [
         (baseline, "#347fb6", "Original sim"),
@@ -70,7 +77,7 @@ def main():
         axis.grid(alpha=0.2)
     fig.suptitle(f"Scene {args.scene}: original sim, {args.preset} and recorded hardware")
     fig.tight_layout()
-    destination = OUT / f"replay_comparison_{args.scene}_{args.preset}"
+    destination = OUT / f"replay_comparison_{args.scene}_{args.preset}_seed{args.seed}"
     fig.savefig(destination.with_suffix(".png"), dpi=160)
     fig.savefig(destination.with_suffix(".pdf"))
     plt.close(fig)

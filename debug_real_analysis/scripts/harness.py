@@ -139,6 +139,10 @@ class Runner:
         self.randomized = randomized
         self.cfg = load_config(ROOT / "config/level2.toml")
         self.cfg.sim.render = False
+        if (self.cfg.env.freq, self.cfg.sim.freq, self.cfg.sim.attitude_freq) != (50, 500, 500):
+            raise ValueError(
+                "These diagnostic time constants assume 50 Hz policy and 500 Hz physics/attitude loops."
+            )
         paths = sorted((ROOT / "runs").glob(f"deploy_*T{scene}.*Z"))
         self.real_events = (
             [json.loads(l) for l in (paths[0] / "events.jsonl").read_text().splitlines()]

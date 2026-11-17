@@ -1,0 +1,52 @@
+[
+  {
+    "phase": "jitter",
+    "episodes": 84,
+    "source_metrics_sha256": "3abc9291b393362770bf7834f9af3574c409dff46fa794aab26df8251ec3eee7"
+  },
+  {
+    "phase": "response80_filter",
+    "episodes": 98,
+    "source_metrics_sha256": "f7e4141d98791ab98944caa20a0b1b82c1aac72ecb28f5b4255b024ac3d647a4"
+  },
+  {
+    "phase": "response80_fixed_delay",
+    "episodes": 28,
+    "source_metrics_sha256": "116f6ef609e5bd2ae9bc29f185dceab557c7579c19f4e0fed514e0c05c328a47"
+  },
+  {
+    "phase": "jitter_response80",
+    "episodes": 168,
+    "source_metrics_sha256": "47712d95386f9edf9b825703d01697dd4a3835955f41d1fd04a0f8b84643e46a"
+  },
+  {
+    "phase": "default_deploy_filter",
+    "episodes": 112,
+    "source_metrics_sha256": "b10dc75640f900ecff51c8e80c00618cfba8a0d62c082ebec184c123853f695e"
+  },
+  {
+    "phase": "response80_long_delay",
+    "episodes": 84,
+    "source_metrics_sha256": "44446218b814dc8d06ee5c41d1a85f31f9430c28409e8b5058d72443697c6643"
+  },
+  {
+    "phase": "default_deploy_long_age",
+    "episodes": 84,
+    "source_metrics_sha256": "287fcbf00e9c9f24f2e0c96f790b8365e316c2da4903d8f2a06bdb822e8102f3"
+  },
+  {
+    "phase": "jitter_response80_delay40",
+    "episodes": 42,
+    "source_metrics_sha256": "7c3958c5ded981879c660dee0fcf7a21565ebc3e20ae0f3415c6999efaa17da2"
+  },
+  {
+    "phase": "response80_delay_ablation",
+    "episodes": 8,
+    "source_metrics_sha256": "c06e8a7bb2357c51803ec58b5005f563d4dbdbb48500a208453013f276957391"
+  },
+  {
+    "phase": "response80_delay50_physics",
+    "episodes": 42,
+    "source_metrics_sha256": "d99068eda7eb11209d9e544168138dc8fa811fdd40c08c7cd5f74dbb56cd6c3b"
+  }
+]

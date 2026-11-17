@@ -9,6 +9,8 @@ from pathlib import Path
 BASE = Path(__file__).resolve().parents[1]
 ROOT = BASE.parent
 EVIDENCE = BASE / "evidence"
+RESULTS = BASE / "results"
+REFERENCE = RESULTS / "reference"
 OUT = Path(os.environ.get("DRONE_DEBUG_OUTPUT_DIR", str(BASE / "generated"))).expanduser().resolve()
 OUT.mkdir(parents=True, exist_ok=True)
 os.environ.setdefault("JAX_PLATFORMS", "cpu")

@@ -1,0 +1,98 @@
+{
+  "date": "2026-11-17",
+  "repo_commit": "d27923b",
+  "policy_files": {
+    "config.json": "12e4613f1772d4407f441736e7e77f0296cb75c20a1b93ea99117e5fbf941c9e",
+    "policy.msgpack": "9b5116f127abc0a4fa2c492c06385ce843883b18e64a0c01dd241348b2cc9394"
+  },
+  "versions": {
+    "crazyflow": "0.4.0",
+    "jax": "0.11.0",
+    "jaxlib": "0.11.0",
+    "numpy": "2.5.2",
+    "scipy": "1.18.0",
+    "mujoco": "3.10.0",
+    "flax": "0.12.8"
+  },
+  "notes": [
+    "All baseline and disturbed trajectories start at takeoff; no gate-triggered interference in the scans.",
+    "Physical terminal state is captured before the official crash teleport.",
+    "Parameter fitting and outcome matching do not identify the actual onboard configuration."
+  ],
+  "reference_preset": "actuator_delay",
+  "noise": {
+    "omega_tau": 0.0,
+    "omega_delay": 2,
+    "omega_average": 1,
+    "state_delay": 0,
+    "state_average": 1,
+    "pose_tau": 0.0,
+    "vel_tau": 0.0,
+    "sample_hold": 1,
+    "command_delay": 0,
+    "thrust_cap": 0.7,
+    "request_cap": 0.8,
+    "thrust_scale": 1.0,
+    "thrust_tau": 0.0,
+    "rotor_rate": 0.8,
+    "damping": 1.0,
+    "stiffness": 1.0,
+    "pose_bias_pitch": 0.0,
+    "onset": "global",
+    "gyro_tau": 0.0,
+    "onboard_pose_tau": 0.0,
+    "uniform_allocation": 0.0,
+    "idle_pwm": 7000.0,
+    "command_substeps": 0,
+    "mass_scale": 1.0,
+    "inertia_scale": 1.0,
+    "drag_scale": 1.0,
+    "motor_gain": 1.0,
+    "vel_bias_z": 0.0,
+    "omega_scale": 1.0
+  },
+  "policy_frequency_hz": 50,
+  "physics_frequency_hz": 500,
+  "archive_records": 92,
+  "reference_records": 50,
+  "historical_baseline_controls": 42,
+  "reference_changed_fields": {
+    "rotor_rate": 0.8,
+    "omega_delay": 2,
+    "thrust_cap": 0.7
+  },
+  "reference_interpretation": {
+    "motor_response_multiplier": 0.8,
+    "policy_angular_velocity_delay_ms": 40,
+    "motor_capacity_N": 0.7,
+    "other_kinematics_current": true,
+    "controller_gains_nominal": true,
+    "default_deployment_filter_added": false
+  },
+  "initial_jitter": {
+    "seed_formula": "900000 + seed",
+    "position_sd_m": [
+      0.005,
+      0.005,
+      0.001
+    ],
+    "rotation_vector_sd_deg": 0.3,
+    "seed_range": [
+      1,
+      20
+    ]
+  },
+  "limitations": [
+    "Current diagnostic reference; not identified hardware parameters.",
+    "Exact 12:37 low point is 0.620 m away horizontally from the recorded policy-observation low point.",
+    "The second scene does not reproduce the recorded near-floor flight.",
+    "Jitter starts and both scenes have been used during search.",
+    "Main policy counters/reveals use physical position; only angular-rate kinematics are delayed."
+  ],
+  "original_scan_episode_counts": {
+    "coarse": 888,
+    "extended": 3238,
+    "focused": 1552,
+    "validation": 144
+  }
+}

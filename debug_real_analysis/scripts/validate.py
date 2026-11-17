@@ -1,3 +1,5 @@
+"""Historical gain-changing validation; use validate_reference.py for the current reference."""
+
 from harness import *
 from dataclasses import replace
 import time

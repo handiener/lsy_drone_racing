@@ -1,0 +1,10 @@
+{
+  "operating_point": "nominal hover, fixed motor target; local linearization, not a flight measurement",
+  "rpm": 15899.876687344424,
+  "native_tau_up_ms": 57.065851968025086,
+  "native_tau_down_ms": 62.13647416256148,
+  "response80_tau_up_ms": 71.33231496003135,
+  "response80_tau_down_ms": 77.67059270320185,
+  "response50_tau_up_ms": 114.13170393605017,
+  "response50_tau_down_ms": 124.27294832512295
+}

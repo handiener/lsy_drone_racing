@@ -1,0 +1,46 @@
+[
+  {
+    "scene": "113735",
+    "preset": "actuator_delay",
+    "episodes": 20,
+    "reached_gate2": 20,
+    "passed_gate3": 9,
+    "finished_all5": 8,
+    "g2g3_below15cm": 12,
+    "near_gate3_below15cm": 10,
+    "near_gate3_below1cm": 6
+  },
+  {
+    "scene": "113735",
+    "preset": "baseline",
+    "episodes": 20,
+    "reached_gate2": 20,
+    "passed_gate3": 20,
+    "finished_all5": 20,
+    "g2g3_below15cm": 0,
+    "near_gate3_below15cm": 0,
+    "near_gate3_below1cm": 0
+  },
+  {
+    "scene": "115247",
+    "preset": "actuator_delay",
+    "episodes": 20,
+    "reached_gate2": 10,
+    "passed_gate3": 10,
+    "finished_all5": 4,
+    "g2g3_below15cm": 0,
+    "near_gate3_below15cm": 0,
+    "near_gate3_below1cm": 0
+  },
+  {
+    "scene": "115247",
+    "preset": "baseline",
+    "episodes": 20,
+    "reached_gate2": 20,
+    "passed_gate3": 20,
+    "finished_all5": 20,
+    "g2g3_below15cm": 0,
+    "near_gate3_below15cm": 0,
+    "near_gate3_below1cm": 0
+  }
+]

@@ -1,0 +1,25 @@
+{
+  "real_113735": {
+    "input_rate_relative_lag_s": 0.04000000000000001,
+    "pitch_rate_peak": 7.658463478088379,
+    "pitch_rate_peak_after_gate2_s": 0.5021271269999998
+  },
+  "exact_start": {
+    "seed": 0,
+    "height_m": -0.0007502614753320813,
+    "xy_error_m": 0.6204790342618477,
+    "timing_error_s": 0.3644260090000002,
+    "input_rate_relative_lag_s": 0.04000000000000001,
+    "pitch_rate_peak": 8.309979438781738,
+    "pitch_rate_peak_after_gate2_s": 0.3399999141693115
+  },
+  "selected_nearby_example": {
+    "seed": 16,
+    "height_m": -0.0006002625450491905,
+    "xy_error_m": 0.19544727999095166,
+    "timing_error_s": 0.04442600899999993,
+    "input_rate_relative_lag_s": 0.04000000000000001,
+    "pitch_rate_peak": 7.840988636016846,
+    "pitch_rate_peak_after_gate2_s": 0.3599998950958252
+  }
+}

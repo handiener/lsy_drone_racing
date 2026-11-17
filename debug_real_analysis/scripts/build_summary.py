@@ -1,3 +1,5 @@
+"""Historical gain-changing summary; use plot_reference.py for the current reference."""
+
 from rank import *
 from paths import read_metrics, resolve_trajectory
 import os
