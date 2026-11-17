@@ -1,0 +1,408 @@
+{
+  "main_swap_comparison": [
+    {
+      "flight": "sim_episode_00",
+      "swap_time_s": 2.02,
+      "gate3_first_observation_time_s": 2.34,
+      "old_order_one_based": [
+        4,
+        1,
+        3,
+        2
+      ],
+      "new_order_one_based": [
+        4,
+        3,
+        1,
+        2
+      ],
+      "pos_m": [
+        -0.5297881960868835,
+        -0.10061582177877426,
+        0.8972759246826172
+      ],
+      "vel_m_s": [
+        -2.475823163986206,
+        -1.588075041770935,
+        -0.8207743167877197
+      ],
+      "measured_tilt_deg": 41.48873334829183,
+      "previous_command": [
+        -0.7980777025222778,
+        0.366688996553421,
+        0.38676488399505615,
+        0.7819747924804688
+      ],
+      "current_command": [
+        -0.6839548349380493,
+        0.30558153986930847,
+        0.37739548087120056,
+        0.7705662250518799
+      ],
+      "thrust_delta_N": -0.011408567428588867,
+      "roll_delta_deg": 6.538758658506647,
+      "finished_track": true,
+      "same_state_previous_order_command": [
+        -0.5951622724533081,
+        0.34058284759521484,
+        0.399042546749115,
+        0.7758498191833496
+      ],
+      "same_state_order_effect_on_thrust_N": -0.0052835941314697266
+    },
+    {
+      "flight": "sim_episode_01",
+      "swap_time_s": 2.1,
+      "gate3_first_observation_time_s": 2.38,
+      "old_order_one_based": [
+        4,
+        1,
+        3,
+        2
+      ],
+      "new_order_one_based": [
+        4,
+        3,
+        1,
+        2
+      ],
+      "pos_m": [
+        -0.5255717635154724,
+        -0.09704762697219849,
+        0.850764811038971
+      ],
+      "vel_m_s": [
+        -2.628964424133301,
+        -1.6690398454666138,
+        -0.7642116546630859
+      ],
+      "measured_tilt_deg": 41.823404729690296,
+      "previous_command": [
+        -0.7774026989936829,
+        0.5576936602592468,
+        0.15618368983268738,
+        0.7894076704978943
+      ],
+      "current_command": [
+        -0.674813985824585,
+        0.5262261033058167,
+        0.17335671186447144,
+        0.7885382175445557
+      ],
+      "thrust_delta_N": -0.000869452953338623,
+      "roll_delta_deg": 5.877900290267478,
+      "finished_track": true,
+      "same_state_previous_order_command": [
+        -0.6708250045776367,
+        0.531652569770813,
+        0.16612644493579865,
+        0.7902107834815979
+      ],
+      "same_state_order_effect_on_thrust_N": -0.0016725659370422363
+    },
+    {
+      "flight": "sim_episode_02",
+      "swap_time_s": 2.16,
+      "gate3_first_observation_time_s": 2.44,
+      "old_order_one_based": [
+        4,
+        1,
+        3,
+        2
+      ],
+      "new_order_one_based": [
+        4,
+        3,
+        1,
+        2
+      ],
+      "pos_m": [
+        -0.511608898639679,
+        -0.10325320810079575,
+        0.784180223941803
+      ],
+      "vel_m_s": [
+        -2.6425113677978516,
+        -1.6190389394760132,
+        -0.16288818418979645
+      ],
+      "measured_tilt_deg": 46.46100238018901,
+      "previous_command": [
+        -0.9623717069625854,
+        0.6438905000686646,
+        0.1412719488143921,
+        0.727461040019989
+      ],
+      "current_command": [
+        -0.8869717717170715,
+        0.6444815993309021,
+        0.11347009986639023,
+        0.7327316999435425
+      ],
+      "thrust_delta_N": 0.005270659923553467,
+      "roll_delta_deg": 4.32009806512765,
+      "finished_track": true,
+      "same_state_previous_order_command": [
+        -0.8488837480545044,
+        0.6691312789916992,
+        0.11922445148229599,
+        0.7054537534713745
+      ],
+      "same_state_order_effect_on_thrust_N": 0.027277886867523193
+    },
+    {
+      "flight": "hardware_113735",
+      "swap_time_s": 2.14906751,
+      "gate3_first_observation_time_s": 3.575245976,
+      "old_order_one_based": [
+        4,
+        1,
+        3,
+        2
+      ],
+      "new_order_one_based": [
+        4,
+        3,
+        1,
+        2
+      ],
+      "pos_m": [
+        -0.4939577281475067,
+        -0.06824943423271179,
+        0.8467177748680115
+      ],
+      "vel_m_s": [
+        -1.8816468715667725,
+        -1.2265369892120361,
+        -1.2215813398361206
+      ],
+      "measured_tilt_deg": 74.1185363064733,
+      "previous_command": [
+        -0.40807390213012695,
+        -0.5223771929740906,
+        0.11145677417516708,
+        0.3561041057109833
+      ],
+      "current_command": [
+        0.3859782814979553,
+        -0.7034170627593994,
+        0.15052515268325806,
+        0.1311509609222412
+      ],
+      "thrust_delta_N": -0.22495314478874207,
+      "roll_delta_deg": 45.49583883503616,
+      "finished_track": false
+    }
+  ],
+  "all_obstacle_1_3_exchanges": [
+    {
+      "flight": "sim_episode_00",
+      "step": 21,
+      "time_s": 0.42,
+      "gate_count": 0,
+      "old_order_one_based": [
+        3,
+        1,
+        4,
+        2
+      ],
+      "new_order_one_based": [
+        1,
+        3,
+        4,
+        2
+      ],
+      "thrust_delta_N": 0.0012351274490356445
+    },
+    {
+      "flight": "sim_episode_00",
+      "step": 101,
+      "time_s": 2.02,
+      "gate_count": 2,
+      "old_order_one_based": [
+        4,
+        1,
+        3,
+        2
+      ],
+      "new_order_one_based": [
+        4,
+        3,
+        1,
+        2
+      ],
+      "thrust_delta_N": -0.011408567428588867
+    },
+    {
+      "flight": "sim_episode_00",
+      "step": 143,
+      "time_s": 2.86,
+      "gate_count": 3,
+      "old_order_one_based": [
+        4,
+        2,
+        3,
+        1
+      ],
+      "new_order_one_based": [
+        4,
+        2,
+        1,
+        3
+      ],
+      "thrust_delta_N": -0.022937119007110596
+    },
+    {
+      "flight": "sim_episode_01",
+      "step": 22,
+      "time_s": 0.44,
+      "gate_count": 0,
+      "old_order_one_based": [
+        3,
+        1,
+        4,
+        2
+      ],
+      "new_order_one_based": [
+        1,
+        3,
+        4,
+        2
+      ],
+      "thrust_delta_N": -0.004021406173706055
+    },
+    {
+      "flight": "sim_episode_01",
+      "step": 105,
+      "time_s": 2.1,
+      "gate_count": 2,
+      "old_order_one_based": [
+        4,
+        1,
+        3,
+        2
+      ],
+      "new_order_one_based": [
+        4,
+        3,
+        1,
+        2
+      ],
+      "thrust_delta_N": -0.000869452953338623
+    },
+    {
+      "flight": "sim_episode_02",
+      "step": 20,
+      "time_s": 0.4,
+      "gate_count": 0,
+      "old_order_one_based": [
+        3,
+        1,
+        4,
+        2
+      ],
+      "new_order_one_based": [
+        1,
+        3,
+        4,
+        2
+      ],
+      "thrust_delta_N": -0.009338080883026123
+    },
+    {
+      "flight": "sim_episode_02",
+      "step": 108,
+      "time_s": 2.16,
+      "gate_count": 2,
+      "old_order_one_based": [
+        4,
+        1,
+        3,
+        2
+      ],
+      "new_order_one_based": [
+        4,
+        3,
+        1,
+        2
+      ],
+      "thrust_delta_N": 0.005270659923553467
+    },
+    {
+      "flight": "sim_episode_02",
+      "step": 150,
+      "time_s": 3.0,
+      "gate_count": 3,
+      "old_order_one_based": [
+        4,
+        2,
+        3,
+        1
+      ],
+      "new_order_one_based": [
+        4,
+        2,
+        1,
+        3
+      ],
+      "thrust_delta_N": -0.019112825393676758
+    },
+    {
+      "flight": "hardware_113735",
+      "step": 24,
+      "time_s": 0.482291165,
+      "gate_count": 0,
+      "old_order_one_based": [
+        3,
+        1,
+        4,
+        2
+      ],
+      "new_order_one_based": [
+        1,
+        3,
+        4,
+        2
+      ],
+      "thrust_delta_N": -0.01477128267288208
+    },
+    {
+      "flight": "hardware_113735",
+      "step": 107,
+      "time_s": 2.14906751,
+      "gate_count": 2,
+      "old_order_one_based": [
+        4,
+        1,
+        3,
+        2
+      ],
+      "new_order_one_based": [
+        4,
+        3,
+        1,
+        2
+      ],
+      "thrust_delta_N": -0.22495314478874207
+    },
+    {
+      "flight": "hardware_113735",
+      "step": 215,
+      "time_s": 4.318347901,
+      "gate_count": 4,
+      "old_order_one_based": [
+        4,
+        2,
+        3,
+        1
+      ],
+      "new_order_one_based": [
+        4,
+        2,
+        1,
+        3
+      ],
+      "thrust_delta_N": 0.2930247485637665
+    }
+  ]
+}

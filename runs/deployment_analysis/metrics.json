@@ -1,0 +1,130 @@
+[
+  {
+    "run": "deploy_20261117T100017.801841Z",
+    "status": "finished",
+    "finish_time_s": 5.122742507024668,
+    "steps": 256,
+    "finish_pos_m": [
+      1.1528270244598389,
+      0.8777487874031067,
+      1.2563499212265015
+    ],
+    "finish_vel_m_s": [
+      -1.8363045454025269,
+      2.252087354660034,
+      -0.8035041689872742
+    ],
+    "finish_speed_m_s": 3.0148848711129155,
+    "finish_tilt_deg": 69.10892135152451,
+    "race_min_height_after_1s_m": 0.3097829818725586,
+    "race_min_height_time_s": 2.780156355,
+    "return_min_height_m": 0.055980782955884933,
+    "return_min_height_after_finish_s": 0.6577070259999998,
+    "return_min_height_pos_m": [
+      -0.003416439052671194,
+      1.2606145143508911,
+      0.055980782955884933
+    ],
+    "max_return_y_first_3s_m": 2.181582450866699,
+    "loop_processing_max_ms": 4.628081922419369,
+    "loop_overruns": 0,
+    "inference_p95_ms": 2.8716667499999997,
+    "mocap_update_max_gap_ms": 42.99541100000001,
+    "estimated_vs_mocap_position_error_p95_m": 0.01599876492247645,
+    "first_braking_target": {
+      "kind": "go_to_sent",
+      "monotonic_ns": 595930309830359,
+      "pos": [
+        0.5437475442886353,
+        1.6247382164001465,
+        1.75
+      ],
+      "yaw": 0.0,
+      "duration": 3.0,
+      "linear": false
+    },
+    "nominal_weight_N": 0.425754,
+    "last_policy_thrust_N": 0.7874444127082825,
+    "last_command_vertical_projection_N": 0.2820288654535041,
+    "recording": {
+      "records_written": 2077,
+      "records_dropped": 0,
+      "recording_error": null,
+      "complete": true
+    }
+  },
+  {
+    "run": "deploy_20261117T100651.417694Z",
+    "status": "no_flight",
+    "events": [
+      {
+        "kind": "exception",
+        "monotonic_ns": 596311671036078,
+        "type": "TimeoutError",
+        "message": "Timeout while fetching initial positions for tracked objects. \nEstimator data is missing for ['cf2'] objects. Is the estimator node running?"
+      },
+      {
+        "kind": "cleanup_start",
+        "monotonic_ns": 596311671061120
+      },
+      {
+        "kind": "cleanup_end",
+        "monotonic_ns": 596311671065003
+      }
+    ]
+  },
+  {
+    "run": "deploy_20261117T100827.697140Z",
+    "status": "finished",
+    "finish_time_s": 5.3048480929574,
+    "steps": 265,
+    "finish_pos_m": [
+      1.1272997856140137,
+      0.8608272671699524,
+      1.28238844871521
+    ],
+    "finish_vel_m_s": [
+      -1.8742231130599976,
+      2.365705966949463,
+      -0.5655853748321533
+    ],
+    "finish_speed_m_s": 3.0706943540203784,
+    "finish_tilt_deg": 67.31709056097428,
+    "race_min_height_after_1s_m": 0.09291486442089081,
+    "race_min_height_time_s": 2.975331582,
+    "return_min_height_m": 0.049554064869880676,
+    "return_min_height_after_finish_s": 0.8044952810000003,
+    "return_min_height_pos_m": [
+      -0.08466628193855286,
+      1.6024752855300903,
+      0.049554064869880676
+    ],
+    "max_return_y_first_3s_m": 2.113851308822632,
+    "loop_processing_max_ms": 3.9616080466657877,
+    "loop_overruns": 0,
+    "inference_p95_ms": 2.289751,
+    "mocap_update_max_gap_ms": 50.582702,
+    "estimated_vs_mocap_position_error_p95_m": 0.01652186393242925,
+    "first_braking_target": {
+      "kind": "go_to_sent",
+      "monotonic_ns": 596412424839024,
+      "pos": [
+        0.5169417262077332,
+        1.6312413215637207,
+        1.75
+      ],
+      "yaw": 0.0,
+      "duration": 3.0,
+      "linear": false
+    },
+    "nominal_weight_N": 0.425754,
+    "last_policy_thrust_N": 0.5429478883743286,
+    "last_command_vertical_projection_N": 0.208598291664008,
+    "recording": {
+      "records_written": 2132,
+      "records_dropped": 0,
+      "recording_error": null,
+      "complete": true
+    }
+  }
+]

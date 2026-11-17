@@ -1,0 +1,3 @@
+{"kind": "exception", "monotonic_ns": 596311671036078, "type": "TimeoutError", "message": "Timeout while fetching initial positions for tracked objects. \nEstimator data is missing for ['cf2'] objects. Is the estimator node running?"}
+{"kind": "cleanup_start", "monotonic_ns": 596311671061120}
+{"kind": "cleanup_end", "monotonic_ns": 596311671065003}

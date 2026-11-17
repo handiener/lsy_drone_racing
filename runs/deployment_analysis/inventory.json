@@ -1,0 +1,616 @@
+[
+  {
+    "run": "deploy_20261117T100017.801841Z",
+    "status": "finished",
+    "drone_ids": [
+      2
+    ],
+    "real_track_objects": true,
+    "observations": 256,
+    "mocap_samples": 532,
+    "last_observed_gate_count": 4,
+    "race_end": {
+      "kind": "race_end",
+      "monotonic_ns": 595930304360655,
+      "flight_time_s": 5.122742507024668,
+      "finished_track": true,
+      "steps": 256,
+      "ros_ok": true
+    },
+    "exceptions": [],
+    "recording_summary": {
+      "records_written": 2077,
+      "records_dropped": 0,
+      "recording_error": null,
+      "complete": true
+    },
+    "event_counts": {
+      "external_pose_sent": 532,
+      "reset": 1,
+      "policy_metadata": 1,
+      "observation": 256,
+      "action": 256,
+      "policy": 256,
+      "attitude_command_sent": 256,
+      "transition": 256,
+      "loop": 256,
+      "race_end": 1,
+      "cleanup_start": 1,
+      "go_to_sent": 3,
+      "emergency_stop_sent": 1,
+      "cleanup_end": 1
+    },
+    "exports": [
+      "runs/deployment_analysis/trajectories/deploy_20261117T100017.801841Z_mocap.csv",
+      "runs/deployment_analysis/trajectories/deploy_20261117T100017.801841Z_policy.csv"
+    ]
+  },
+  {
+    "run": "deploy_20261117T100651.417694Z",
+    "status": "no_flight",
+    "drone_ids": [
+      2
+    ],
+    "real_track_objects": true,
+    "observations": 0,
+    "mocap_samples": 0,
+    "last_observed_gate_count": null,
+    "race_end": null,
+    "exceptions": [
+      {
+        "kind": "exception",
+        "monotonic_ns": 596311671036078,
+        "type": "TimeoutError",
+        "message": "Timeout while fetching initial positions for tracked objects. \nEstimator data is missing for ['cf2'] objects. Is the estimator node running?"
+      }
+    ],
+    "recording_summary": {
+      "records_written": 3,
+      "records_dropped": 0,
+      "recording_error": null,
+      "complete": true
+    },
+    "event_counts": {
+      "exception": 1,
+      "cleanup_start": 1,
+      "cleanup_end": 1
+    },
+    "exports": [
+      "runs/deployment_analysis/trajectories/deploy_20261117T100651.417694Z_mocap.csv",
+      "runs/deployment_analysis/trajectories/deploy_20261117T100651.417694Z_policy.csv"
+    ]
+  },
+  {
+    "run": "deploy_20261117T100827.697140Z",
+    "status": "finished",
+    "drone_ids": [
+      2
+    ],
+    "real_track_objects": true,
+    "observations": 265,
+    "mocap_samples": 533,
+    "last_observed_gate_count": 4,
+    "race_end": {
+      "kind": "race_end",
+      "monotonic_ns": 596412419425420,
+      "flight_time_s": 5.3048480929574,
+      "finished_track": true,
+      "steps": 265,
+      "ros_ok": true
+    },
+    "exceptions": [],
+    "recording_summary": {
+      "records_written": 2132,
+      "records_dropped": 0,
+      "recording_error": null,
+      "complete": true
+    },
+    "event_counts": {
+      "external_pose_sent": 533,
+      "reset": 1,
+      "policy_metadata": 1,
+      "observation": 265,
+      "action": 265,
+      "policy": 265,
+      "attitude_command_sent": 265,
+      "transition": 265,
+      "loop": 265,
+      "race_end": 1,
+      "cleanup_start": 1,
+      "go_to_sent": 3,
+      "emergency_stop_sent": 1,
+      "cleanup_end": 1
+    },
+    "exports": [
+      "runs/deployment_analysis/trajectories/deploy_20261117T100827.697140Z_mocap.csv",
+      "runs/deployment_analysis/trajectories/deploy_20261117T100827.697140Z_policy.csv"
+    ]
+  },
+  {
+    "run": "deploy_20261117T102228.660876Z",
+    "status": "ended_without_finish",
+    "drone_ids": [
+      2
+    ],
+    "real_track_objects": false,
+    "observations": 238,
+    "mocap_samples": 185,
+    "last_observed_gate_count": 0,
+    "race_end": null,
+    "exceptions": [
+      {
+        "kind": "exception",
+        "monotonic_ns": 597254183383080,
+        "type": "KeyboardInterrupt",
+        "message": ""
+      }
+    ],
+    "recording_summary": {
+      "records_written": 1619,
+      "records_dropped": 0,
+      "recording_error": null,
+      "complete": true
+    },
+    "event_counts": {
+      "external_pose_sent": 185,
+      "reset": 1,
+      "policy_metadata": 1,
+      "observation": 238,
+      "action": 238,
+      "policy": 238,
+      "attitude_command_sent": 238,
+      "transition": 238,
+      "loop": 238,
+      "exception": 1,
+      "cleanup_start": 1,
+      "emergency_stop_sent": 1,
+      "cleanup_end": 1
+    },
+    "exports": [
+      "runs/deployment_analysis/trajectories/deploy_20261117T102228.660876Z_mocap.csv",
+      "runs/deployment_analysis/trajectories/deploy_20261117T102228.660876Z_policy.csv"
+    ]
+  },
+  {
+    "run": "deploy_20261117T102459.085589Z",
+    "status": "ended_without_finish",
+    "drone_ids": [
+      2
+    ],
+    "real_track_objects": false,
+    "observations": 2212,
+    "mocap_samples": 1374,
+    "last_observed_gate_count": 0,
+    "race_end": null,
+    "exceptions": [
+      {
+        "kind": "exception",
+        "monotonic_ns": 597445843931706,
+        "type": "KeyboardInterrupt",
+        "message": ""
+      },
+      {
+        "kind": "cleanup_exception",
+        "monotonic_ns": 597447644064025,
+        "type": "KeyboardInterrupt",
+        "message": ""
+      }
+    ],
+    "recording_summary": {
+      "records_written": 14652,
+      "records_dropped": 0,
+      "recording_error": null,
+      "complete": true
+    },
+    "event_counts": {
+      "external_pose_sent": 1374,
+      "reset": 1,
+      "policy_metadata": 1,
+      "observation": 2212,
+      "action": 2212,
+      "policy": 2212,
+      "attitude_command_sent": 2212,
+      "transition": 2212,
+      "loop": 2212,
+      "exception": 1,
+      "cleanup_start": 1,
+      "emergency_stop_sent": 1,
+      "cleanup_exception": 1
+    },
+    "exports": [
+      "runs/deployment_analysis/trajectories/deploy_20261117T102459.085589Z_mocap.csv",
+      "runs/deployment_analysis/trajectories/deploy_20261117T102459.085589Z_policy.csv"
+    ]
+  },
+  {
+    "run": "deploy_20261117T104622.175276Z",
+    "status": "finished",
+    "drone_ids": [
+      3
+    ],
+    "real_track_objects": false,
+    "observations": 244,
+    "mocap_samples": 209,
+    "last_observed_gate_count": 4,
+    "race_end": {
+      "kind": "race_end",
+      "monotonic_ns": 598685267394301,
+      "flight_time_s": 4.884627892053686,
+      "finished_track": true,
+      "steps": 244,
+      "ros_ok": true
+    },
+    "exceptions": [
+      {
+        "kind": "cleanup_exception",
+        "monotonic_ns": 598688252032455,
+        "type": "KeyboardInterrupt",
+        "message": ""
+      }
+    ],
+    "recording_summary": {
+      "records_written": 1680,
+      "records_dropped": 0,
+      "recording_error": null,
+      "complete": true
+    },
+    "event_counts": {
+      "external_pose_sent": 209,
+      "reset": 1,
+      "policy_metadata": 1,
+      "observation": 244,
+      "action": 244,
+      "policy": 244,
+      "attitude_command_sent": 244,
+      "transition": 244,
+      "loop": 244,
+      "race_end": 1,
+      "cleanup_start": 1,
+      "go_to_sent": 1,
+      "emergency_stop_sent": 1,
+      "cleanup_exception": 1
+    },
+    "exports": [
+      "runs/deployment_analysis/trajectories/deploy_20261117T104622.175276Z_mocap.csv",
+      "runs/deployment_analysis/trajectories/deploy_20261117T104622.175276Z_policy.csv"
+    ]
+  },
+  {
+    "run": "deploy_20261117T104828.785539Z",
+    "status": "finished",
+    "drone_ids": [
+      3
+    ],
+    "real_track_objects": true,
+    "observations": 246,
+    "mocap_samples": 206,
+    "last_observed_gate_count": 4,
+    "race_end": {
+      "kind": "race_end",
+      "monotonic_ns": 598818439908552,
+      "flight_time_s": 4.923027354059741,
+      "finished_track": true,
+      "steps": 246,
+      "ros_ok": true
+    },
+    "exceptions": [
+      {
+        "kind": "cleanup_exception",
+        "monotonic_ns": 598821805847887,
+        "type": "KeyboardInterrupt",
+        "message": ""
+      }
+    ],
+    "recording_summary": {
+      "records_written": 1689,
+      "records_dropped": 0,
+      "recording_error": null,
+      "complete": true
+    },
+    "event_counts": {
+      "external_pose_sent": 206,
+      "reset": 1,
+      "policy_metadata": 1,
+      "observation": 246,
+      "action": 246,
+      "policy": 246,
+      "attitude_command_sent": 246,
+      "transition": 246,
+      "loop": 246,
+      "race_end": 1,
+      "cleanup_start": 1,
+      "go_to_sent": 1,
+      "emergency_stop_sent": 1,
+      "cleanup_exception": 1
+    },
+    "exports": [
+      "runs/deployment_analysis/trajectories/deploy_20261117T104828.785539Z_mocap.csv",
+      "runs/deployment_analysis/trajectories/deploy_20261117T104828.785539Z_policy.csv"
+    ]
+  },
+  {
+    "run": "deploy_20261117T110059.075060Z",
+    "status": "finished",
+    "drone_ids": [
+      3
+    ],
+    "real_track_objects": true,
+    "observations": 297,
+    "mocap_samples": 237,
+    "last_observed_gate_count": 4,
+    "race_end": {
+      "kind": "race_end",
+      "monotonic_ns": 599571562577796,
+      "flight_time_s": 5.947274549980648,
+      "finished_track": true,
+      "steps": 297,
+      "ros_ok": true
+    },
+    "exceptions": [
+      {
+        "kind": "cleanup_exception",
+        "monotonic_ns": 599574714949349,
+        "type": "KeyboardInterrupt",
+        "message": ""
+      }
+    ],
+    "recording_summary": {
+      "records_written": 2026,
+      "records_dropped": 0,
+      "recording_error": null,
+      "complete": true
+    },
+    "event_counts": {
+      "external_pose_sent": 237,
+      "reset": 1,
+      "policy_metadata": 1,
+      "observation": 297,
+      "action": 297,
+      "policy": 297,
+      "attitude_command_sent": 297,
+      "transition": 297,
+      "loop": 297,
+      "race_end": 1,
+      "cleanup_start": 1,
+      "go_to_sent": 1,
+      "emergency_stop_sent": 1,
+      "cleanup_exception": 1
+    },
+    "exports": [
+      "runs/deployment_analysis/trajectories/deploy_20261117T110059.075060Z_mocap.csv",
+      "runs/deployment_analysis/trajectories/deploy_20261117T110059.075060Z_policy.csv"
+    ]
+  },
+  {
+    "run": "deploy_20261117T110653.614444Z",
+    "status": "finished",
+    "drone_ids": [
+      3
+    ],
+    "real_track_objects": false,
+    "observations": 235,
+    "mocap_samples": 185,
+    "last_observed_gate_count": 4,
+    "race_end": {
+      "kind": "race_end",
+      "monotonic_ns": 599914851395612,
+      "flight_time_s": 4.702279823948629,
+      "finished_track": true,
+      "steps": 235,
+      "ros_ok": true
+    },
+    "exceptions": [
+      {
+        "kind": "cleanup_exception",
+        "monotonic_ns": 599918573067460,
+        "type": "KeyboardInterrupt",
+        "message": ""
+      }
+    ],
+    "recording_summary": {
+      "records_written": 1602,
+      "records_dropped": 0,
+      "recording_error": null,
+      "complete": true
+    },
+    "event_counts": {
+      "external_pose_sent": 185,
+      "reset": 1,
+      "policy_metadata": 1,
+      "observation": 235,
+      "action": 235,
+      "policy": 235,
+      "attitude_command_sent": 235,
+      "transition": 235,
+      "loop": 235,
+      "race_end": 1,
+      "cleanup_start": 1,
+      "go_to_sent": 1,
+      "emergency_stop_sent": 1,
+      "cleanup_exception": 1
+    },
+    "exports": [
+      "runs/deployment_analysis/trajectories/deploy_20261117T110653.614444Z_mocap.csv",
+      "runs/deployment_analysis/trajectories/deploy_20261117T110653.614444Z_policy.csv"
+    ]
+  },
+  {
+    "run": "deploy_20261117T111147.345218Z",
+    "status": "finished",
+    "drone_ids": [
+      3
+    ],
+    "real_track_objects": false,
+    "observations": 224,
+    "mocap_samples": 178,
+    "last_observed_gate_count": 4,
+    "race_end": {
+      "kind": "race_end",
+      "monotonic_ns": 600210675020676,
+      "flight_time_s": 4.481905519030988,
+      "finished_track": true,
+      "steps": 224,
+      "ros_ok": true
+    },
+    "exceptions": [
+      {
+        "kind": "cleanup_exception",
+        "monotonic_ns": 600214893767536,
+        "type": "KeyboardInterrupt",
+        "message": ""
+      }
+    ],
+    "recording_summary": {
+      "records_written": 1529,
+      "records_dropped": 0,
+      "recording_error": null,
+      "complete": true
+    },
+    "event_counts": {
+      "external_pose_sent": 178,
+      "reset": 1,
+      "policy_metadata": 1,
+      "observation": 224,
+      "action": 224,
+      "policy": 224,
+      "attitude_command_sent": 224,
+      "transition": 224,
+      "loop": 224,
+      "race_end": 1,
+      "cleanup_start": 1,
+      "go_to_sent": 1,
+      "emergency_stop_sent": 1,
+      "cleanup_exception": 1
+    },
+    "exports": [
+      "runs/deployment_analysis/trajectories/deploy_20261117T111147.345218Z_mocap.csv",
+      "runs/deployment_analysis/trajectories/deploy_20261117T111147.345218Z_policy.csv"
+    ]
+  },
+  {
+    "run": "deploy_20261117T113735.863815Z",
+    "status": "ended_without_finish",
+    "drone_ids": [
+      3
+    ],
+    "real_track_objects": true,
+    "observations": 248,
+    "mocap_samples": 191,
+    "last_observed_gate_count": 4,
+    "race_end": null,
+    "exceptions": [
+      {
+        "kind": "exception",
+        "monotonic_ns": 601770902613278,
+        "type": "KeyboardInterrupt",
+        "message": ""
+      }
+    ],
+    "recording_summary": {
+      "records_written": 1685,
+      "records_dropped": 0,
+      "recording_error": null,
+      "complete": true
+    },
+    "event_counts": {
+      "external_pose_sent": 191,
+      "reset": 1,
+      "policy_metadata": 1,
+      "observation": 248,
+      "action": 248,
+      "policy": 248,
+      "attitude_command_sent": 248,
+      "transition": 248,
+      "loop": 248,
+      "exception": 1,
+      "cleanup_start": 1,
+      "emergency_stop_sent": 1,
+      "cleanup_end": 1
+    },
+    "exports": [
+      "runs/deployment_analysis/trajectories/deploy_20261117T113735.863815Z_mocap.csv",
+      "runs/deployment_analysis/trajectories/deploy_20261117T113735.863815Z_policy.csv"
+    ]
+  },
+  {
+    "run": "deploy_20261117T115247.042900Z",
+    "status": "finished",
+    "drone_ids": [
+      3
+    ],
+    "real_track_objects": true,
+    "observations": 303,
+    "mocap_samples": 557,
+    "last_observed_gate_count": 4,
+    "race_end": {
+      "kind": "race_end",
+      "monotonic_ns": 602676149353291,
+      "flight_time_s": 6.0674308420857415,
+      "finished_track": true,
+      "steps": 303,
+      "ros_ok": true
+    },
+    "exceptions": [],
+    "recording_summary": {
+      "records_written": 2384,
+      "records_dropped": 0,
+      "recording_error": null,
+      "complete": true
+    },
+    "event_counts": {
+      "external_pose_sent": 557,
+      "reset": 1,
+      "policy_metadata": 1,
+      "observation": 303,
+      "action": 303,
+      "policy": 303,
+      "attitude_command_sent": 303,
+      "transition": 303,
+      "loop": 303,
+      "race_end": 1,
+      "cleanup_start": 1,
+      "go_to_sent": 3,
+      "emergency_stop_sent": 1,
+      "cleanup_end": 1
+    },
+    "exports": [
+      "runs/deployment_analysis/trajectories/deploy_20261117T115247.042900Z_mocap.csv",
+      "runs/deployment_analysis/trajectories/deploy_20261117T115247.042900Z_policy.csv"
+    ]
+  },
+  {
+    "run": "deploy_20261117T115447.164994Z",
+    "status": "no_flight",
+    "drone_ids": [
+      3
+    ],
+    "real_track_objects": true,
+    "observations": 0,
+    "mocap_samples": 0,
+    "last_observed_gate_count": null,
+    "race_end": null,
+    "exceptions": [
+      {
+        "kind": "exception",
+        "monotonic_ns": 602792602540105,
+        "type": "RuntimeError",
+        "message": "cf3 exceeds upper tolerances ([0.1 0.1]). Position is: [-1.1847146  0.8274467], should be: [-1.5   0.75]"
+      }
+    ],
+    "recording_summary": {
+      "records_written": 3,
+      "records_dropped": 0,
+      "recording_error": null,
+      "complete": true
+    },
+    "event_counts": {
+      "exception": 1,
+      "cleanup_start": 1,
+      "cleanup_end": 1
+    },
+    "exports": [
+      "runs/deployment_analysis/trajectories/deploy_20261117T115447.164994Z_mocap.csv",
+      "runs/deployment_analysis/trajectories/deploy_20261117T115447.164994Z_policy.csv"
+    ]
+  }
+]
