@@ -17,14 +17,14 @@ This checks memory and execution, not final training quality or compatibility wi
 
 ```bash
 pixi run -e gpu python -m lsy_drone_racing.control.rl_race.train \
-  --run_name=race_s1 --seed=1
+  --run_name=race_s1 --seed=1 --intermediate_eval=True
 ```
 
 All other options use the defaults below. Override any option with `--name=value`:
 
 ```bash
 pixi run -e gpu python -m lsy_drone_racing.control.rl_race.train \
-  --run_name=race_custom --seed=2 --race_steps=10000000000 \
+  --run_name=race_custom --seed=2 --intermediate_eval=True --race_steps=10000000000 \
   --policy_layers='(256,256,256)' --anneal_steps=400000000
 ```
 
@@ -33,6 +33,13 @@ reached within its budget, race is skipped. Weight continuation requires a new r
 matching network/environment settings and
 `--start_stage=race --continue_race=True --start_params=PATH/race_final.pkl`.
 This restores weights/normalization; Adam and rollout state start fresh.
+
+Intermediate evaluation is **off by default** (`--intermediate_eval=False`), so race/anneal
+continuation skips periodic evaluation. Enable it with `--intermediate_eval=True`;
+`--eval_every_steps` controls its spacing. Pretrain requires `--intermediate_eval=True`
+because evaluation success determines when to switch to race; omitting it raises an error.
+The from-scratch examples above and bundled sweep YAMLs explicitly enable it.
+Final evaluation after race/anneal still runs regardless of this flag.
 
 <details>
 <summary><strong>Training arguments: meaning and actual defaults</strong></summary>
@@ -93,6 +100,7 @@ Boolean/list examples: `--continue_race=True`, `--policy_layers='(256,256)'`.
 | `--policy_layers` | `(256, 256, 256)` | Actor hidden-layer widths. |
 | `--value_layers` | `(256, 256, 256, 256)` | Critic hidden-layer widths. |
 | `--activation` | `swish` | swish, elu, relu or tanh. |
+| `--intermediate_eval` | `False` | Run periodic evaluation during training; must be True when starting from pretrain. |
 | `--eval_every_steps` | `80000000` | Requested transition spacing for intermediate evaluation. |
 | `--num_eval_envs` | `512` | Intermediate evaluation worlds. |
 | `--final_eval_episodes` | `1024` | Final official-start episodes PER evaluation seed. |

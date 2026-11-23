@@ -131,6 +131,7 @@ parameters:
         name: repeat_seed2_70_70
         seed: 2
   start_stage: {value: pretrain}
+  intermediate_eval: {value: true}
   start_params: {value: null}
   policy_layers: {value: [256, 256, 256]}
   value_layers: {value: [256, 256, 256, 256]}

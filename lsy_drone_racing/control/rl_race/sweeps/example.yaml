@@ -22,6 +22,8 @@ parameters:
     - 2
   start_stage:
     value: pretrain
+  intermediate_eval:
+    value: true
   start_params:
     value: null
   policy_layers:
