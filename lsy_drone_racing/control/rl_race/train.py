@@ -13,7 +13,7 @@ anneals an existing full-learning-rate checkpoint.
 Usage::
 
     python -m lsy_drone_racing.control.rl_race.train --run_name=race_s1 --seed=1 \
-        --intermediate_eval=True --wandb_project=lsy-drone-racing --wandb_group=rl-race
+        --wandb_project=lsy-drone-racing --wandb_group=rl-race
 """
 
 from __future__ import annotations
@@ -178,8 +178,6 @@ def train(
     wandb_group: str | None = None,
 ) -> str:
     """Run the staged training and return the run directory."""
-    if not intermediate_eval and start_stage == "pretrain":
-        raise ValueError("Pretrain needs intermediate evaluation for stage switching")
     if eval_every_steps <= 0:
         raise ValueError("eval_every_steps must be positive")
     if final_eval_episodes < 1 or final_eval_batch_size < 1 or not final_eval_seeds:
@@ -400,7 +398,8 @@ def train(
                     network_factory=network_factory,
                     num_evals=eval_intervals + 1,
                     deterministic_eval=True,
-                    run_evals=intermediate_eval,
+                    # Pretrain needs success measurements to switch to the race reward.
+                    run_evals=stage == "pretrain" or intermediate_eval,
                     log_training_metrics=True,
                     seed=seed,
                     progress_fn=progress,
