@@ -64,7 +64,6 @@ find = {}
 [tool.setuptools.package-data]
 lsy_drone_racing = [
     "envs/assets/*.xml", "envs/assets/*.png",
-    "control/rl_single_l2/deploy_model/*",
 ]
 
 [tool.pytest.ini_options]

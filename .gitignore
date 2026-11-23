@@ -30,10 +30,11 @@ acados/
 # Local simulation recordings
 /runs/
 
-# Level 2 training artifacts; selected submission exports remain tracked.
+# Archived legacy training results (kept locally after removing the old implementation).
 /lsy_drone_racing/control/rl_single_l2/outputs/
+
+# Racing training artifacts; selected submission exports remain tracked.
 /lsy_drone_racing/control/rl_race/outputs/
-!/lsy_drone_racing/control/rl_single_l2/deploy_model/*.json
 !/lsy_drone_racing/control/rl_race/deploy_model/*.json
 
 # Per-machine W&B agent state on the shared lab filesystem.
