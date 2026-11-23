@@ -18,8 +18,15 @@ from crazyflow.control.transform import force2pwm
 from drone_estimators.ros import ROSConnector
 from scipy.spatial.transform import Rotation as R
 
+from lsy_drone_racing.utils.onboard_log import (
+    DEFAULT_LOG_PARAMS,
+    DEFAULT_LOG_VARIABLES,
+    OnboardLog,
+    pack_log_blocks,
+)
+
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Sequence
     from concurrent.futures import Future
     from multiprocessing.synchronize import Event
 
@@ -75,6 +82,9 @@ class Crazyflie:
         self._loop_thread: threading.Thread | None = None
         self._estimator_stop_event: Event | None = None
         self._estimator_future: Future[None] | None = None
+        self._onboard_log: OnboardLog | None = None
+        self._log_streams: list[Any] = []
+        self._log_futures: list[Future[None]] = []
 
     @classmethod
     def from_radio(
@@ -212,6 +222,71 @@ class Crazyflie:
         """Send the Crazyflie emergency stop command."""
         self._run(self._emergency_stop)
 
+    def start_onboard_log(
+        self,
+        path: str | Path,
+        variables: Sequence[str] = DEFAULT_LOG_VARIABLES,
+        period_ms: int = 10,
+        params: Sequence[str] = DEFAULT_LOG_PARAMS,
+        strict: bool = False,
+    ) -> None:
+        """Stream firmware log variables until ``stop_onboard_log`` or ``close`` is called.
+
+        Records the firmware version and ``params`` once, packs ``variables`` into log blocks and
+        stores every received sample with its onboard and host timestamps. The file is written to
+        ``path`` when logging stops.
+
+        Args:
+            path: Output file (JSON Lines), see [onboard_log][lsy_drone_racing.utils.onboard_log].
+            variables: Firmware log variables, e.g. ``"gyro.x"``.
+            period_ms: Log period of every block in ms (10 to 2550). 10 ms gives 100 Hz.
+            params: Firmware parameters recorded once at the start.
+            strict: Raise if a variable is not in the firmware log table. Otherwise skip it.
+        """
+        if not self.is_connected or self._loop_thread is None:
+            raise RuntimeError("Connect the Crazyflie before starting the onboard log")
+        if self._onboard_log is not None:
+            raise RuntimeError("Onboard logging is already running")
+        if not 10 <= period_ms <= 2550:
+            raise ValueError("period_ms must be in [10, 2550]")
+        self._onboard_log = OnboardLog(path=Path(path), period_ms=period_ms)
+        try:
+            self._run(self._start_onboard_log, list(variables), list(params), strict)
+        except Exception:
+            self._onboard_log = None
+            self._log_streams = []
+            raise
+        for block, stream in enumerate(self._log_streams):
+            future = asyncio.run_coroutine_threadsafe(
+                self._read_log_stream(stream, block), self._loop
+            )
+            self._log_futures.append(future)
+
+    def stop_onboard_log(self) -> Path | None:
+        """Stop all log blocks and write the log file. Return its path, or None if not logging."""
+        log = self._onboard_log
+        if log is None:
+            return None
+        for future in self._log_futures:
+            future.cancel()
+        for future in self._log_futures:
+            try:
+                future.result(timeout=1.0)
+            except (Exception, asyncio.CancelledError):  # Readers end by cancellation
+                pass  # Their samples are already stored
+        try:
+            if self.is_connected:
+                self._run(self._stop_log_streams)
+        except Exception as exc:
+            log.errors.append(f"Stopping log blocks failed: {exc!r}")
+        finally:
+            self._log_futures = []
+            self._log_streams = []
+            self._onboard_log = None
+        path = log.save()
+        logger.info(f"Onboard log with {len(log.samples)} samples written to {path}")
+        return path
+
     def close(self, emergency_stop: bool = True) -> None:
         """Emergency-stop, stop the estimator updater, disconnect, and close the event loop."""
         if self._loop.is_closed():
@@ -220,6 +295,11 @@ class Crazyflie:
             if emergency_stop and self.is_connected:
                 self._run(self._emergency_stop)
                 self._run(asyncio.sleep, 0.1)
+            if self._onboard_log is not None:
+                try:
+                    self.stop_onboard_log()
+                except Exception as exc:
+                    logger.error(f"Stopping the onboard log failed: {exc}")
             if self._estimator_stop_event is not None:
                 self._estimator_stop_event.set()
             if self._estimator_future is not None:
@@ -408,6 +488,61 @@ class Crazyflie:
 
     async def _emergency_stop(self) -> None:
         await self.cf.localization().emergency().send_emergency_stop()
+
+    async def _start_onboard_log(
+        self, variables: list[str], params: list[str], strict: bool
+    ) -> None:
+        log = self._onboard_log
+        assert log is not None, "Onboard log must be created before starting the blocks"
+        platform = self.cf.platform()
+        for key, query in (
+            ("version", platform.get_firmware_version),
+            ("device_type", platform.get_device_type_name),
+        ):
+            try:
+                log.firmware[key] = await query()
+            except Exception as exc:
+                log.firmware[key] = None
+                log.errors.append(f"Reading firmware {key} failed: {exc!r}")
+        param = self.cf.param()
+        log.firmware["params"] = {}
+        for name in params:
+            try:
+                log.firmware["params"][name] = await param.get(name)
+            except Exception:  # Not every firmware exposes every parameter
+                log.firmware["params"][name] = None
+
+        cf_log = self.cf.log()
+        available = set(cf_log.names())
+        log.missing = [name for name in variables if name not in available]
+        if log.missing and strict:
+            raise ValueError(f"Log variables not in the firmware log table: {log.missing}")
+        if log.missing:
+            logger.warning(f"Skipping log variables not in the firmware: {log.missing}")
+        names = [name for name in variables if name in available]
+        log.types = {name: cf_log.get_type(name) for name in names}
+        log.blocks = pack_log_blocks(names, log.types)
+        for names_in_block in log.blocks:
+            block = await cf_log.create_block()
+            for name in names_in_block:
+                await block.add_variable(name)
+            self._log_streams.append(await block.start(log.period_ms))
+
+    async def _read_log_stream(self, stream: Any, block: int) -> None:
+        log = self._onboard_log
+        assert log is not None, "Onboard log must exist while its streams are read"
+        try:
+            while True:
+                data = await stream.next()
+                log.append(data.timestamp, block, data.data)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # E.g. the link dropped. Keep the samples received so far.
+            log.errors.append(f"Log block {block} stopped: {exc!r}")
+
+    async def _stop_log_streams(self) -> None:
+        for stream in self._log_streams:
+            await asyncio.wait_for(stream.stop(), timeout=1.0)
 
     async def _change_commander_level(self, level: Literal["low", "high"]) -> None:
         if self._commander_level == level:
