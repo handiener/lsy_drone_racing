@@ -233,8 +233,8 @@ class Crazyflie:
         """Stream firmware log variables until ``stop_onboard_log`` or ``close`` is called.
 
         Records the firmware version and ``params`` once, packs ``variables`` into log blocks and
-        stores every received sample with its onboard and host timestamps. The file is written to
-        ``path`` when logging stops.
+        writes every received sample with its onboard and host timestamps to ``path`` while logging
+        runs, so the samples survive a crash of this process.
 
         Args:
             path: Output file (JSON Lines), see [onboard_log][lsy_drone_racing.utils.onboard_log].
@@ -249,10 +249,17 @@ class Crazyflie:
             raise RuntimeError("Onboard logging is already running")
         if not 10 <= period_ms <= 2550:
             raise ValueError("period_ms must be in [10, 2550]")
-        self._onboard_log = OnboardLog(path=Path(path), period_ms=period_ms)
+        log = OnboardLog(path=Path(path), period_ms=period_ms)
+        self._onboard_log = log
         try:
             self._run(self._start_onboard_log, list(variables), list(params), strict)
+            log.open()
         except Exception:
+            if self._log_streams:
+                try:
+                    self._run(self._stop_log_streams)
+                except Exception as exc:
+                    logger.warning(f"Stopping log blocks after a failed start failed: {exc!r}")
             self._onboard_log = None
             self._log_streams = []
             raise
@@ -263,7 +270,7 @@ class Crazyflie:
             self._log_futures.append(future)
 
     def stop_onboard_log(self) -> Path | None:
-        """Stop all log blocks and write the log file. Return its path, or None if not logging."""
+        """Stop all log blocks and close the log file. Return its path, or None if not logging."""
         log = self._onboard_log
         if log is None:
             return None
@@ -273,7 +280,7 @@ class Crazyflie:
             try:
                 future.result(timeout=1.0)
             except (Exception, asyncio.CancelledError):  # Readers end by cancellation
-                pass  # Their samples are already stored
+                pass  # Their samples are already written
         try:
             if self.is_connected:
                 self._run(self._stop_log_streams)
@@ -283,8 +290,8 @@ class Crazyflie:
             self._log_futures = []
             self._log_streams = []
             self._onboard_log = None
-        path = log.save()
-        logger.info(f"Onboard log with {len(log.samples)} samples written to {path}")
+            path = log.close()
+        logger.info(f"Onboard log with {log.n_samples} samples written to {path}")
         return path
 
     def close(self, emergency_stop: bool = True) -> None:
@@ -292,14 +299,16 @@ class Crazyflie:
         if self._loop.is_closed():
             return
         try:
-            if emergency_stop and self.is_connected:
-                self._run(self._emergency_stop)
-                self._run(asyncio.sleep, 0.1)
-            if self._onboard_log is not None:
-                try:
-                    self.stop_onboard_log()
-                except Exception as exc:
-                    logger.error(f"Stopping the onboard log failed: {exc}")
+            try:
+                if emergency_stop and self.is_connected:
+                    self._run(self._emergency_stop)
+                    self._run(asyncio.sleep, 0.1)
+            finally:  # Also close the log if the emergency stop failed, e.g. after a link loss
+                if self._onboard_log is not None:
+                    try:
+                        self.stop_onboard_log()
+                    except Exception as exc:
+                        logger.error(f"Stopping the onboard log failed: {exc}")
             if self._estimator_stop_event is not None:
                 self._estimator_stop_event.set()
             if self._estimator_future is not None:

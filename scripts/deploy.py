@@ -41,7 +41,7 @@ def main(
          the controller specified in the config file is used.
         render: Show a live MuJoCo window that mirrors the real race from mocap data.
         onboard_log: Stream onboard telemetry (IMU, motor outputs, battery, controller commands) at
-         100 Hz and write it to `logs/onboard/` when the drone is closed.
+         100 Hz to `logs/onboard/` until the drone is closed.
     """
     rclpy.init()
     config = load_config(Path(__file__).parents[1] / "config" / config)
@@ -83,7 +83,7 @@ def main(
         if onboard_log:
             stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
             log_path = Path(__file__).parents[1] / "logs" / "onboard" / f"onboard_{stamp}.jsonl"
-            # The log is written when the environment closes the drone, after the return to start.
+            # Samples are written while flying. The log ends when the env closes the drone.
             env.unwrapped.drone.start_onboard_log(log_path)
 
         if render:
