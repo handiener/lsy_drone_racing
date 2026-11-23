@@ -1,3 +1,4 @@
+# Estimated 3–5 hour recipe for one RTX 5090 (32 GB); not benchmarked.
 run_name: recurrent_league_s1
 seed: 1
 roll_limit_deg: 80
@@ -9,18 +10,24 @@ value_layers: [512, 512]
 activation: leaky_relu
 n_gates: 2
 unroll_length: 32
-num_envs: 128
+num_envs: 256
 batch_size: 128
-num_minibatches: 4
-num_updates_per_batch: 4
+num_minibatches: 8
+num_updates_per_batch: 2
 max_episode_steps: 1500
-pretrain_max_steps: 2000000000
-race_steps: 12000000000
-multi_steps: 12000000000
+pretrain_max_steps: 20971520
+race_steps: 33554432
+multi_steps: 41943040
 switch_success: 0.3
 sparse_switch_success: 0.9
-eval_every_steps: 80000000
-snapshot_interval: 100
-league_capacity: 16
-solo_opponent_fraction: 0.25
+eval_every_steps: 4194304
+num_eval_envs: 32
+snapshot_interval: 64
+league_capacity: 32
+solo_opponent_fraction: 0.0
 sampling_exponent: 0.9
+# Short final check only; use more episodes/seeds for model comparisons.
+final_eval_episodes: 16
+final_eval_seeds: [410000]
+final_eval_batch_size: 16
+intermediate_eval: false

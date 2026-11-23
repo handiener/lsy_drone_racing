@@ -72,7 +72,7 @@ Defaults can be changed through `competition_progress`, `ranking_reward`,
 
 ```bash
 export SCIPY_ARRAY_API=1 XLA_PYTHON_CLIENT_PREALLOCATE=false
-# Full recipe; this is a long training run, not the acceptance test.
+# Estimated 3–5 hour RTX 5090 (32 GB) recipe; not benchmarked.
 pixi run -e gpu python -m lsy_drone_racing.control.rl_race_multi.train \
   --config_file=lsy_drone_racing/control/rl_race_multi/configs/full.yaml \
   --run_name=recurrent_league_s1
@@ -87,6 +87,33 @@ pixi run -e gpu python -m lsy_drone_racing.control.rl_race_multi.train \
 arguments override file values; to explicitly set a value equal to the Python
 default, set it in the YAML. Unknown keys fail validation. Without a file, all
 options are available directly as `--name=value`; see `train --help`.
+
+`configs/full.yaml` and the training function defaults use the same RTX 5090
+recipe: 256 worlds, batch size 128, 8 minibatches, unroll length 32, and 2 update
+epochs. Network/action defaults remain LSTM(256), MLP(512,512), two gates,
+80° roll/pitch, 70° yaw, seed 1. `configs/smoke.yaml` is independent and unchanged.
+
+One PPO iteration collects `128 × 8 × 32 = 32,768` learner transitions and makes
+`8 × 2 = 16` optimizer updates. The maximum stage counts are:
+
+| Stage | Transition budget | PPO iterations | Host epoch size |
+| --- | ---: | ---: | ---: |
+| Dense | 20,971,520 | 640 | 128 iterations |
+| Sparse | 33,554,432 | 1,024 | 128 iterations |
+| Multi | 41,943,040 | 1,280 | 64 iterations |
+
+Solo evaluation uses 32 worlds every 4,194,304 transitions (128 iterations),
+in addition to its initial evaluation. Multi intermediate evaluation is off.
+All three budgets divide their host epoch sizes exactly, so this recipe adds
+no training iterations through epoch rounding. Solo stages may switch earlier
+at the unchanged 30% / 90% success thresholds, or stop below threshold at budget
+exhaustion. Logs/checkpoints retain cumulative step offsets across stages.
+
+Final evaluation is a short check: 16 episodes **per opponent per seed**, seed
+410000 only, batch size 16. A fresh complete run has at most Solo + 20 historical
+opponents, thus 336 final evaluation episodes. Increase episodes and seeds for
+formal model comparisons; standalone evaluation CLI defaults remain larger.
+The 3–5 hour target and 32 GB fit are estimates, not measured guarantees.
 
 Outputs default to `rl_race_multi/outputs/RUN/`: settings, pinned tracks,
 per-stage environment/network metadata, JSONL metrics, stage status,
@@ -107,15 +134,20 @@ RNG, partial rollout, recurrent carry and local stage step counters restart**.
 This is a warm resume, not bitwise continuation. The cumulative log/checkpoint
 step counter continues from the loaded checkpoint; local stage iteration counters restart. Legacy MLP exports/checkpoints are rejected.
 Each worker currently uses one local GPU; independent W&B agents support multiple
-machines. Default training worlds are 128, not 16,384; benchmark memory/performance
-before increasing them with recurrent league inference.
+machines. Default training worlds are 256; memory/performance of this recipe has
+not been benchmarked.
 
 ## League
 
-Slot zero is the frozen solo policy. With history, sampling is 25% slot zero and
-75% history, with historical weight `k**0.9` (oldest k=1). Without history it is
-100% solo. Settings: `solo_opponent_fraction`, `sampling_exponent`,
-`snapshot_interval` (default 100 PPO iterations), `league_capacity` (default 16).
+Slot zero is the frozen solo policy. With history, the default
+`solo_opponent_fraction=0.0` samples 100% historical policies, with historical
+weight `k**0.9` (oldest k=1). Without history it is 100% solo. Selection changes
+only at episode resets: an already running solo-opponent episode is not interrupted
+when the first historical snapshot arrives. Settings: `solo_opponent_fraction`,
+`sampling_exponent`, `snapshot_interval` (default 64 PPO iterations),
+`league_capacity` (default 32). One snapshot interval is 2,097,152 transitions;
+the full Multi budget creates exactly 20 periodic snapshots. Solo + 20 snapshots
+use 21 slots, leaving 11 free in a fresh run without an external pool.
 Snapshots are taken on host epoch boundaries. Multi budgets round up to whole
 snapshot intervals; actual counts are recorded. Frozen opponents default to
 mean actions (`deterministic_opponent=True`) and have independent actor carry
