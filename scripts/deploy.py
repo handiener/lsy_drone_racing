@@ -27,7 +27,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def main(config: str = "level2.toml", controller: str | None = None, render: bool = False):
+def main(
+    config: str = "level2.toml",
+    controller: str | None = None,
+    render: bool = False,
+    onboard_log: bool = False,
+):
     """Deployment script to run the controller on the real drone.
 
     Args:
@@ -35,6 +40,8 @@ def main(config: str = "level2.toml", controller: str | None = None, render: boo
         controller: The name of the controller file in `lsy_drone_racing/control/` or None. If None,
          the controller specified in the config file is used.
         render: Show a live MuJoCo window that mirrors the real race from mocap data.
+        onboard_log: Stream onboard telemetry (IMU, motor outputs, battery, controller commands) at
+         100 Hz and write it to `logs/onboard/` when the drone is closed.
     """
     rclpy.init()
     config = load_config(Path(__file__).parents[1] / "config" / config)
@@ -73,6 +80,11 @@ def main(config: str = "level2.toml", controller: str | None = None, render: boo
 
         obs, info = env.reset(seed=config.env.seed, options=config.deploy)
         next_obs = obs  # Set next_obs to avoid errors when the loop never enters
+        if onboard_log:
+            stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+            log_path = Path(__file__).parents[1] / "logs" / "onboard" / f"onboard_{stamp}.jsonl"
+            # The log is written when the environment closes the drone, after the return to start.
+            env.unwrapped.drone.start_onboard_log(log_path)
 
         if render:
             viewer.set_track(
