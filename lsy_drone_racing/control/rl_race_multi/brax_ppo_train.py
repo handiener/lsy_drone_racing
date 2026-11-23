@@ -12,10 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# MODIFIED COPY for lsy_drone_racing (rl_race): brax/training/agents/ppo/train.py from
-# google/brax commit c8605294264a7b7546268adbb4beabc9eb624000. The only change is the optional
-# `optimizer_override` argument of `train` (marked "rl_race:"), used for separate policy/value learning
-# rates. Without it, behaviour is identical to upstream (see tests/integration/test_rl_race.py).
+# MODIFIED COPY: google/brax c8605294264a7b7546268adbb4beabc9eb624000.
+# Recurrent rollout/loss/evaluation adapters, post-update normalization, league
+# host snapshot hook and optional fixed-size host epochs; optimizer/PPO loops retained.
 
 """Proximal policy optimization training.
 
@@ -26,27 +25,25 @@ import functools
 import time
 from typing import Any, Callable, Mapping, Optional, Tuple, Union
 
-from absl import logging
-from brax import base
-from brax import envs
-from brax.training import acting
-from brax.training import gradients
-from brax.training import logger as metric_logger
-from brax.training import pmap
-from brax.training import types
-from brax.training.acme import running_statistics
-from brax.training.acme import specs
-from brax.training.agents.ppo import checkpoint
-from brax.training.agents.ppo import losses as ppo_losses
-from brax.training.agents.ppo import networks as ppo_networks
-from brax.training.agents.ppo import optimizer as ppo_optimizer
-from brax.training.types import Params
-from brax.training.types import PRNGKey
 import flax
 import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
+from absl import logging
+from brax import base, envs
+from brax.training import gradients, pmap, types
+from brax.training import logger as metric_logger
+from brax.training.acme import running_statistics, specs
+from brax.training.agents.ppo import checkpoint
+from brax.training.agents.ppo import losses as ppo_losses
+from brax.training.agents.ppo import networks as ppo_networks
+from brax.training.agents.ppo import optimizer as ppo_optimizer
+from brax.training.types import Params, PRNGKey
+
+from . import network as recurrent_network
+from . import recurrent as acting
+from .recurrent import compute_ppo_loss as recurrent_loss
 
 InferenceParams = Tuple[running_statistics.NestedMeanStd, Params]
 Metrics = types.Metrics
@@ -224,7 +221,7 @@ def train(
     learning_rate_schedule_max_lr: float = 1e-2,
     network_factory: types.NetworkFactory[
         ppo_networks.PPONetworks
-    ] = ppo_networks.make_ppo_networks,
+    ] = recurrent_network.NetworkConfig().factory(),
     seed: int = 0,
     use_pmap_on_reset: bool = True,
     # eval
@@ -244,6 +241,8 @@ def train(
     restore_params: Optional[Any] = None,
     restore_value_fn: bool = True,
     run_evals: bool = True,
+    iterations_per_epoch: int | None = None,
+    eval_every_steps: int | None = None,
     optimizer_override: Optional[optax.GradientTransformation] = None,  # rl_race: hook
 ):
   """PPO training.
@@ -336,6 +335,8 @@ def train(
     run_evals: if True, use the evaluator num_eval times to collect distinct
       eval rollouts. If False, num_eval_envs and eval_env are ignored.
       progress_fn is then expected to use training_metrics.
+    iterations_per_epoch: fixed host epoch size (league snapshots), or automatic.
+    eval_every_steps: optional minimum spacing between periodic evaluations.
     optimizer_override: rl_race: if given, replaces the optimizer built from
       learning_rate and max_grad_norm (incl. gradient clipping). Not supported
       with the adaptive-KL learning-rate schedule.
@@ -345,6 +346,10 @@ def train(
   Returns:
     Tuple of (make_policy function, network params, metrics)
   """
+  if getattr(environment, "full_race", False):
+    raise ValueError("Full-race mode is evaluation-only; train with first-event termination")
+  if bootstrap_on_timeout or use_distributional_critic or vision:
+    raise ValueError("Use scalar recurrent critic and wrapper-provided timeout bootstrap")
   assert batch_size * num_minibatches % num_envs == 0
 
   if vision and action_repeat != 1:
@@ -388,6 +393,15 @@ def train(
           * max(num_resets_per_eval, 1)
       )
   ).astype(int)
+
+  if iterations_per_epoch is not None:
+    if iterations_per_epoch < 1:
+      raise ValueError("iterations_per_epoch must be positive")
+    num_training_steps_per_epoch = iterations_per_epoch
+    num_evals_after_init = max(
+        int(np.ceil(num_timesteps / (iterations_per_epoch * env_step_per_training_step))), 1
+    )
+  last_eval_step = 0
 
   key = jax.random.PRNGKey(seed)
   global_key, local_key = jax.random.split(key)
@@ -451,7 +465,7 @@ def train(
   ppo_network = network_factory(
       obs_shape, env.action_size, preprocess_observations_fn=normalize  # pyrefly: ignore[bad-argument-type]
   )
-  make_policy = ppo_networks.make_inference_fn(
+  make_policy = recurrent_network.make_inference_fn(
       ppo_network,
       compute_value=bootstrap_on_timeout or clipping_epsilon_value is not None,
       use_distributional_critic=use_distributional_critic,
@@ -481,7 +495,7 @@ def train(
     optimizer = optimizer_override
 
   loss_fn = functools.partial(
-      ppo_losses.compute_ppo_loss,
+      recurrent_loss,
       ppo_network=ppo_network,
       entropy_cost=entropy_cost,
       discounting=discounting,
@@ -623,15 +637,6 @@ def train(
       )
 
     normalizer_params = training_state.normalizer_params
-    if not lr_is_adaptive_kl:
-      # Update normalization params before SGD for backwards compatibility.
-      normalizer_params = running_statistics.update(
-          normalizer_params,
-          _remove_pixels(data.observation),
-          pmap_axis_name=_PMAP_AXIS_NAME,
-          until_count=normalize_until_count,
-      )
-
     (optimizer_state, params, _), metrics = jax.lax.scan(
         functools.partial(
             sgd_step, data=data, normalizer_params=normalizer_params
@@ -641,8 +646,8 @@ def train(
         length=num_updates_per_batch,
     )
 
-    if lr_is_adaptive_kl:
-      # For adaptive KL, normalization params should be updated after SGD s.t.
+    if normalize_observations:
+      # Keep behavior log probabilities consistent throughout PPO updates;
       # old distribution outputs are valid for KL computation.
       normalizer_params = running_statistics.update(
           normalizer_params,
@@ -854,6 +859,8 @@ def train(
     ))
 
     policy_params_fn(current_step, make_policy, params)
+    if hasattr(environment, "update_league_state"):
+      env_state = environment.update_league_state(env_state, params, current_step)
 
     if save_checkpoint_path is not None:
       ckpt_config = checkpoint.network_config(
@@ -868,7 +875,12 @@ def train(
 
     if num_evals > 0:
       metrics = training_metrics
-      if run_evals:
+      if run_evals and (
+          eval_every_steps is None
+          or current_step - last_eval_step >= eval_every_steps
+          or it == num_evals_after_init - 1
+      ):
+        last_eval_step = current_step
         metrics = evaluator.run_evaluation(
             params,
             training_metrics,

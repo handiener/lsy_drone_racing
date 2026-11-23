@@ -1,25 +1,7 @@
-r"""Train the racing policy with Brax PPO in two stages (see README.md).
+"""Solo dense -> solo sparse -> frozen-opponent league, using the vendored Brax PPO."""
 
-Stage ``pretrain``: reward ``dense_path`` (race reward + arc-length progress along the nominal
-path), until the deterministic evaluation from the official start reaches ``switch_success``.
-Stage ``race``: reward ``race``; the critic is re-initialized and trained alone for
-``critic_only_iterations`` PPO iterations, then the policy resumes with ``policy_lr_after_switch``.
-Stage ``anneal`` (optional, ``anneal_steps > 0``): continues the race stage with the same reward and
-both learning rates decaying linearly to ``anneal_to`` of their full value, after a short warmup.
-The race stage's ``race_final.pkl`` keeps the full-learning-rate policy as a branch point; the
-annealed policy is ``anneal_final.pkl`` (export with ``--stage=anneal``). ``--start_stage=anneal``
-anneals an existing full-learning-rate checkpoint.
-
-Usage::
-
-    python -m lsy_drone_racing.control.rl_race.train --run_name=race_s1 --seed=1 \
-        --wandb_project=lsy-drone-racing --wandb_group=rl-race
-"""
-
-from __future__ import annotations
-
+import inspect
 import json
-import pickle
 import sys
 import time
 from dataclasses import asdict
@@ -28,132 +10,85 @@ from pathlib import Path
 from typing import Any
 
 import fire
-import jax
 import numpy as np
 
-from lsy_drone_racing.control.rl_race import brax_ppo_train as ppo
-from lsy_drone_racing.control.rl_race.env_wrapper import rewards
-from lsy_drone_racing.control.rl_race.env_wrapper.actions import ActionConfig
-from lsy_drone_racing.control.rl_race.env_wrapper.env import EnvConfig, RaceEnv
-from lsy_drone_racing.control.rl_race.env_wrapper.observations import ObsConfig
-from lsy_drone_racing.control.rl_race.env_wrapper.starts import StartConfig
-from lsy_drone_racing.control.rl_race.network import NetworkConfig
-from lsy_drone_racing.control.rl_race.optim import iteration_updates, lr_schedules, separate_lr
+from . import brax_ppo_train as ppo
+from . import checkpoint
+from .env_wrapper import rewards
+from .env_wrapper.actions import ActionConfig
+from .env_wrapper.env import EnvConfig, RaceEnv
+from .env_wrapper.multi import MultiRaceEnv
+from .env_wrapper.observations import ObsConfig
+from .env_wrapper.starts import StartConfig
+from .league import League
+from .network import NetworkConfig
+from .optim import iteration_updates, lr_schedules, separate_lr
 
 RL_DIR = Path(__file__).resolve().parent
-ACTIVATIONS = ("swish", "elu", "relu", "tanh")
 
 
 class _SwitchReward(Exception):
-    """Raised from progress_fn to end pre-training once the success threshold is met."""
+    """Stop at a successfully evaluated stage boundary, preserving latest actor weights."""
 
 
-def env_config(
-    stage: str,
-    roll_limit_deg: float,
-    pitch_limit_deg: float,
-    yaw_limit_deg: float,
-    official_prob: float,
-    max_steps: int,
-    pretrain_reward: dict[str, float] | None = None,
-    race_reward: dict[str, float] | None = None,
-    n_gates: int = 2,
-    thrust_min_fraction: float = 0.0,
-    thrust_max_fraction: float = 1.0,
-) -> EnvConfig:
-    """Environment configuration of a stage (``pretrain`` or ``race``).
-
-    ``pretrain_reward`` overrides coefficients of the ``dense_path`` shaping reward; the race
-    reward always uses the ``race`` preset.
-    """
-    if stage == "pretrain":
-        reward = rewards.preset("dense_path", **(pretrain_reward or {}))
-    else:
-        reward = rewards.preset("race", **(race_reward or {}))
-    return EnvConfig(
-        max_episode_steps=max_steps,
-        action=ActionConfig(
-            roll_limit_deg=roll_limit_deg,
-            pitch_limit_deg=pitch_limit_deg,
-            yaw_limit_deg=yaw_limit_deg,
-            thrust_min_fraction=thrust_min_fraction,
-            thrust_max_fraction=thrust_max_fraction,
-        ),
-        obs=ObsConfig(n_gates=n_gates),
-        reward=reward,
-        start=StartConfig(official_prob=official_prob),
-    )
-
-
-def eval_summary(metrics: dict[str, Any]) -> dict[str, float]:
-    """Success rate and mean lap time from Brax evaluation metrics (official starts only)."""
-    episodes = float(metrics.get("eval/episode_official_done", 0.0))
-    success = float(metrics.get("eval/episode_success", 0.0))
-    lap_time = float(metrics.get("eval/episode_lap_time", 0.0))
+def eval_summary(metrics: dict) -> dict:
+    count = float(metrics.get("eval/episode_official_done", 0))
+    success = float(metrics.get("eval/episode_success", 0))
     return {
-        "eval/success_rate": success / episodes if episodes > 0 else 0.0,
-        "eval/lap_time": lap_time / success if success > 0 else float("nan"),
-        "eval/gates_passed": float(metrics.get("eval/episode_gates", 0.0)),
-        "eval/crash_rate": float(metrics.get("eval/episode_crashed", 0.0)),
+        "eval/success_rate": success / count if count else 0.0,
+        "eval/lap_time": float(metrics.get("eval/episode_lap_time", 0)) / success
+        if success
+        else 0.0,
     }
-
-
-def save_params(params: Any, target: Path) -> None:
-    """Atomically pickle (normalizer, policy, value) parameters on the host."""
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_suffix(".tmp")
-    temporary.write_bytes(pickle.dumps(jax.device_get(params)))
-    temporary.replace(target)
-
-
-def load_params(source: str | Path) -> Any:
-    """Load parameters written by ``save_params`` (trusted local files only)."""
-    return pickle.loads(Path(source).read_bytes())
 
 
 def train(
     run_name: str | None = None,
     output_root: str | None = None,
-    seed: int = 0,
+    seed: int = 1,
     device: str = "gpu",
-    # Problem.
-    roll_limit_deg: float = 70.0,
-    pitch_limit_deg: float = 70.0,
+    config_file: str | None = None,
+    roll_limit_deg: float = 80.0,
+    pitch_limit_deg: float = 80.0,
     yaw_limit_deg: float = 70.0,
     thrust_min_fraction: float = 0.0,
     thrust_max_fraction: float = 1.0,
     n_gates: int = 2,
     official_start_prob: float = 0.5,
-    max_episode_steps: int = 750,
-    # Schedule.
+    max_episode_steps: int = 1500,
     pretrain_max_steps: int = 2_000_000_000,
-    pretrain_crash: float | None = 20.0,
-    pretrain_time: float | None = 0.2,
-    pretrain_progress: float | None = None,
-    pretrain_path_lateral: float | None = None,
     race_steps: int = 12_000_000_000,
+    multi_steps: int = 12_000_000_000,
     switch_success: float = 0.3,
+    sparse_switch_success: float = 0.9,
     critic_only_iterations: int = 10,
+    reset_critic: bool = True,
     start_params: str | None = None,
     start_stage: str = "pretrain",
-    continue_race: bool = False,
-    start_step: int = 0,
-    lr_decay_to: float = 1.0,
-    warmup_iterations: int = 0,
-    anneal_steps: int = 0,
-    anneal_to: float = 0.1,
-    anneal_warmup_iterations: int = 5,
-    race_time: float | None = 0.3,
-    race_crash: float | None = 20.0,
-    race_gate: float | None = 5.0,
-    race_lap: float | None = 10.0,
-    race_lap_bonus: float | None = None,
-    race_lap_ref: float | None = None,
-    # PPO (Brax): one iteration = num_envs * unroll_length * (batch * minibatches / num_envs).
-    num_envs: int = 16384,
+    solo_checkpoint: str | None = None,
+    league_manifest: str | None = None,
+    solo_config: str | None = None,
+    multi_config: str | None = None,
+    pretrain_crash: float = 20.0,
+    pretrain_time: float = 0.2,
+    pretrain_progress: float = 15.0,
+    pretrain_path_lateral: float = 1.0,
+    race_time: float = 0.3,
+    race_crash: float = 20.0,
+    race_gate: float = 5.0,
+    race_lap: float = 10.0,
+    race_lap_bonus: float = 0.0,
+    race_lap_ref: float = 4.0,
+    competition_progress: float = 0.1,
+    ranking_reward: float = 0.1,
+    proximity_penalty: float = 0.02,
+    proximity_distance: float = 0.4,
+    inter_collision_penalty: float = 25.0,
+    outcome_reward: float = 1.0,
+    num_envs: int = 128,
     unroll_length: int = 32,
-    batch_size: int = 4096,
-    num_minibatches: int = 32,
+    batch_size: int = 128,
+    num_minibatches: int = 4,
     num_updates_per_batch: int = 4,
     learning_rate: float = 3e-4,
     policy_lr_after_switch: float = 1e-4,
@@ -163,47 +98,121 @@ def train(
     gae_lambda: float = 0.95,
     clipping_epsilon: float = 0.2,
     max_grad_norm: float = 1.0,
-    policy_layers: tuple[int, ...] = (256, 256, 256),
-    value_layers: tuple[int, ...] = (256, 256, 256, 256),
-    activation: str = "swish",
-    # Evaluation and logging.
-    intermediate_eval: bool = False,
+    hidden_size: int = 256,
+    policy_layers: tuple[int, ...] = (512, 512),
+    value_layers: tuple[int, ...] = (512, 512),
+    activation: str = "leaky_relu",
     eval_every_steps: int = 80_000_000,
-    num_eval_envs: int = 512,
-    final_eval_episodes: int = 1024,
-    final_eval_seeds: tuple[int, ...] = (100000, 200000, 300000),
-    final_eval_batch_size: int = 256,
+    num_eval_envs: int = 32,
+    intermediate_eval: bool = False,
+    final_eval_episodes: int = 128,
+    final_eval_seeds: tuple[int, ...] = (410000, 420000, 430000),
+    final_eval_batch_size: int = 32,
+    snapshot_interval: int = 100,
+    league_capacity: int = 16,
+    solo_opponent_fraction: float = 0.25,
+    sampling_exponent: float = 0.9,
+    swap_starts: bool = True,
+    deterministic_opponent: bool = True,
     wandb_project: str | None = None,
     wandb_entity: str | None = None,
     wandb_group: str | None = None,
 ) -> str:
-    """Run the staged training and return the run directory."""
-    if eval_every_steps <= 0:
-        raise ValueError("eval_every_steps must be positive")
-    if final_eval_episodes < 1 or final_eval_batch_size < 1 or not final_eval_seeds:
-        raise ValueError("Final evaluation needs positive episodes, batch size and seeds")
-    if start_stage not in {"pretrain", "race", "anneal"}:
-        raise ValueError("start_stage must be pretrain, race or anneal")
-    if start_stage != "pretrain" and start_params is None:
-        raise ValueError(f"start_stage={start_stage} needs start_params")
-    if start_stage == "anneal" and anneal_steps <= 0:
-        raise ValueError("start_stage=anneal needs anneal_steps > 0")
-    if activation not in ACTIVATIONS:
-        raise ValueError(f"activation must be one of {ACTIVATIONS}")
-    if (batch_size * num_minibatches) % num_envs:
-        raise ValueError("batch_size * num_minibatches must be a multiple of num_envs")
+    """Train all three stages; early failure is recorded and never silently advanced.
 
-    run_name = run_name or datetime.now().strftime("race_%Y%m%d_%H%M%S")
-    root = Path(output_root).expanduser().resolve() if output_root else RL_DIR / "outputs"
-    run_dir = root / run_name
-    run_dir.mkdir(parents=True, exist_ok=False)
-    settings = locals().copy()
-    settings["policy_layers"], settings["value_layers"] = list(policy_layers), list(value_layers)
-    network_config = NetworkConfig(
-        tuple(policy_layers), tuple(value_layers), activation, noise_scale
+    Resume restores model/normalizer, not Adam, RNG or recurrent rollout state.
+    Solo stages always evaluate; intermediate_eval controls only league evaluation.
+    """
+    settings = {k: v for k, v in locals().copy().items()}
+    if config_file:
+        import yaml
+
+        configured = yaml.safe_load(Path(config_file).read_text())
+        signature = inspect.signature(train)
+        if not isinstance(configured, dict) or set(configured) - set(signature.parameters):
+            raise ValueError("Unknown train keys in config_file")
+        if "config_file" in configured:
+            raise ValueError("Nested configuration files are unsupported")
+        overrides = {
+            k: v
+            for k, v in settings.items()
+            if k != "config_file" and v != signature.parameters[k].default
+        }
+        return train(**{**configured, **overrides})
+    if start_stage not in {"pretrain", "race", "multi"}:
+        raise ValueError("Invalid start_stage")
+    if start_stage != "pretrain" and not start_params:
+        raise ValueError("Stage resume requires start_params")
+    if start_stage == "multi" and not solo_checkpoint:
+        raise ValueError("Multi resume needs frozen solo_checkpoint")
+    if not (0 <= switch_success <= 1 and 0 <= sparse_switch_success <= 1):
+        raise ValueError("Invalid stage thresholds")
+    if n_gates != 2:
+        raise ValueError("57D league observation requires n_gates=2")
+    if (
+        min(
+            num_envs,
+            batch_size,
+            num_minibatches,
+            num_updates_per_batch,
+            unroll_length,
+            eval_every_steps,
+            num_eval_envs,
+            max_episode_steps,
+            snapshot_interval,
+            final_eval_episodes,
+            final_eval_batch_size,
+        )
+        < 1
+        or not final_eval_seeds
+    ):
+        raise ValueError("Counts, horizons and seeds must be positive")
+    if min(pretrain_max_steps, race_steps, multi_steps) < 1:
+        raise ValueError("All stage budgets must be positive")
+    if (batch_size * num_minibatches) % num_envs:
+        raise ValueError("Sequence count must be divisible by num_envs")
+    if not 0 <= solo_opponent_fraction <= 1 or sampling_exponent < 0 or league_capacity < 2:
+        raise ValueError("Invalid league sampling settings")
+    if (
+        min(
+            race_crash,
+            competition_progress,
+            ranking_reward,
+            proximity_penalty,
+            inter_collision_penalty,
+            outcome_reward,
+        )
+        < 0
+        or proximity_distance <= 0
+    ):
+        raise ValueError(
+            "Competition coefficients must be nonnegative; proximity distance positive"
+        )
+    network = NetworkConfig(
+        tuple(policy_layers), tuple(value_layers), activation, noise_scale, hidden_size
     )
-    network = network_config.metadata()
-    network_factory = network_config.factory()
+    factory = network.factory()
+    nets = factory(57, 4)
+    run_name = run_name or datetime.now().strftime("recurrent_%Y%m%d_%H%M%S")
+    root = Path(output_root).expanduser().resolve() if output_root else RL_DIR / "outputs"
+    run = root / run_name
+    run.mkdir(parents=True, exist_ok=False)
+    settings.update(run_name=run_name, output_root=str(root))
+    # Pin both track definitions for stage changes, evaluation and reproducibility.
+    import shutil
+
+    from .env_wrapper.env import DEFAULT_CONFIG as solo_default
+    from .env_wrapper.multi import DEFAULT_CONFIG as multi_default
+
+    for name, path in [
+        ("solo_track.toml", solo_config or solo_default),
+        ("multi_track.toml", multi_config or multi_default),
+    ]:
+        shutil.copy2(Path(path).expanduser(), run / name)
+    settings.update(
+        solo_config=str(run / "solo_track.toml"), multi_config=str(run / "multi_track.toml")
+    )
+    checkpoint.write_json(run / "settings.json", settings)
     import wandb
 
     wandb_run = wandb.run
@@ -213,243 +222,293 @@ def train(
             entity=wandb_entity,
             group=wandb_group,
             name=run_name,
-            dir=str(run_dir),
-            config={
-                key: str(value) if isinstance(value, Path) else value
-                for key, value in settings.items()
-            },
+            dir=str(run),
+            config=settings,
         )
-
-    overrides = {
-        "crash": pretrain_crash,
-        "time": pretrain_time,
-        "progress": pretrain_progress,
-        "path_lateral": pretrain_path_lateral,
-    }
-    pretrain_reward = {key: value for key, value in overrides.items() if value is not None}
-    race_reward = {
-        key: value
-        for key, value in {
-            "time": race_time,
-            "crash": race_crash,
-            "gate": race_gate,
-            "lap": race_lap,
-            "lap_bonus": race_lap_bonus,
-            "lap_ref": race_lap_ref,
-        }.items()
-        if value is not None
-    }
-    step_offset = start_step
-    params = load_params(start_params) if start_params else None
-    stage_log: list[dict[str, Any]] = []
-    stages = {"pretrain": ["pretrain", "race"], "race": ["race"], "anneal": []}[start_stage]
-    if anneal_steps > 0:
-        stages.append("anneal")
+    loaded = checkpoint.load(start_params, network.metadata()) if start_params else None
+    params = loaded["params"] if loaded else None
+    if (
+        start_stage == "multi"
+        and not league_manifest
+        and loaded
+        and loaded["league"].get("entries")
+    ):
+        checkpoint.write_json(run / "resume_league.json", loaded["league"])
+        league_manifest = str(run / "resume_league.json")
+    stages = ["pretrain", "race", "multi"][["pretrain", "race", "multi"].index(start_stage) :]
+    stage_log = []
+    offset = int(loaded["steps"]) if loaded else 0
+    settings["resume_from_steps"] = offset
+    checkpoint.write_json(run / "settings.json", settings)
+    pool = None
+    transitions = batch_size * num_minibatches * unroll_length
+    updates = iteration_updates(num_updates_per_batch, num_minibatches)
+    started = time.time()
     try:
         for stage in stages:
-            cfg = env_config(
-                stage,
-                roll_limit_deg,
-                pitch_limit_deg,
-                yaw_limit_deg,
-                official_start_prob,
-                max_episode_steps,
-                pretrain_reward,
-                race_reward,
-                n_gates,
-                thrust_min_fraction,
-                thrust_max_fraction,
+            dense = stage == "pretrain"
+            reward = rewards.RewardConfig(
+                gate=race_gate,
+                lap=race_lap,
+                time=pretrain_time if dense else race_time,
+                crash=pretrain_crash if dense else race_crash,
+                progress=pretrain_progress if dense else 0.0,
+                path_lateral=pretrain_path_lateral,
+                lap_bonus=race_lap_bonus,
+                lap_ref=race_lap_ref,
+                competition_progress=competition_progress,
+                ranking=ranking_reward,
+                proximity=proximity_penalty,
+                proximity_distance=proximity_distance,
+                inter_collision=inter_collision_penalty,
+                outcome=outcome_reward,
             )
-            eval_cfg = env_config(
-                stage,
-                roll_limit_deg,
-                pitch_limit_deg,
-                yaw_limit_deg,
-                1.0,
-                max_episode_steps,
-                pretrain_reward,
-                race_reward,
-                n_gates,
-                thrust_min_fraction,
-                thrust_max_fraction,
+            cfg = EnvConfig(
+                max_episode_steps=max_episode_steps,
+                hidden_size=hidden_size,
+                action=ActionConfig(
+                    roll_limit_deg,
+                    pitch_limit_deg,
+                    yaw_limit_deg,
+                    thrust_min_fraction,
+                    thrust_max_fraction,
+                ),
+                obs=ObsConfig(n_gates),
+                reward=reward,
+                start=StartConfig(official_prob=1.0 if stage == "multi" else official_start_prob),
             )
-            env = RaceEnv(num_envs, cfg, device=device, seed=seed)
-            eval_env = RaceEnv(num_eval_envs, eval_cfg, device=device, seed=seed + 10_000)
-            steps = {"pretrain": pretrain_max_steps, "race": race_steps, "anneal": anneal_steps}[
-                stage
-            ]
-            (run_dir / f"{stage}_config.json").write_text(
-                json.dumps(
-                    {
-                        "stage": stage,
-                        "env": asdict(cfg),
-                        "network": network,
-                        "freq": env.freq,
-                        "thrust_min": env.action_cfg.thrust_min,
-                        "thrust_max": env.action_cfg.thrust_max,
-                        "settings": {
-                            k: str(v) if isinstance(v, Path) else v for k, v in settings.items()
-                        },
-                    },
-                    indent=2,
+            eval_cfg = EnvConfig(
+                max_episode_steps=max_episode_steps,
+                hidden_size=hidden_size,
+                action=cfg.action,
+                obs=cfg.obs,
+                reward=reward,
+                start=StartConfig(official_prob=1.0),
+            )
+            if stage == "multi":
+                solo = checkpoint.load(solo_checkpoint, network.metadata())
+                pool = League(
+                    solo_checkpoint,
+                    network.metadata(),
+                    solo["env"]["action"],
+                    run / "league",
+                    league_capacity,
+                    solo_opponent_fraction,
+                    sampling_exponent,
+                    league_manifest,
                 )
-                + "\n"
-            )
-            latest: dict[str, Any] = {}
-            started = time.time()
-            # Actual learning rates (Brax's training/learning_rate logs the constant argument only).
-            schedule: dict[str, Any] = {
-                "policy": lambda _: learning_rate,
-                "value": lambda _: learning_rate,
-            }
-
-            def keep_params(step: int, _make_policy: Any, current: Any, stage: str = stage) -> None:
-                latest["step"], latest["params"] = step, current
-                save_params(current, run_dir / "checkpoints" / f"{stage}_latest.pkl")
-
-            def progress(step: int, metrics: dict[str, Any], stage: str = stage) -> None:
-                values = {k: float(v) for k, v in metrics.items() if np.ndim(v) == 0}
-                is_eval = "eval/episode_reward" in values
-                if is_eval:
-                    values.update(eval_summary(values))
-                values["stage"] = {"pretrain": 0.0, "race": 1.0, "anneal": 2.0}[stage]
-                opt_step = (step // transitions) * updates
-                values["lr/policy"] = float(schedule["policy"](opt_step))
-                values["lr/value"] = float(schedule["value"](opt_step))
-                if wandb_run is not None:
-                    wandb_run.log(values, step=step_offset + step)
-                if not is_eval:
-                    return
-                rate, lap = values["eval/success_rate"], values["eval/lap_time"]
-                elapsed = time.time() - started
-                print(
-                    f"[{stage}] step {step_offset + step:>13,d} | success {rate:5.1%} | "
-                    f"lap {lap:5.2f}s | gates {values['eval/gates_passed']:4.2f} | "
-                    f"{elapsed / 60:6.1f} min",
-                    flush=True,
+                env = MultiRaceEnv(
+                    num_envs,
+                    cfg,
+                    pool,
+                    nets,
+                    settings["multi_config"],
+                    device,
+                    seed,
+                    swap_starts,
+                    snapshot_interval,
+                    transitions,
+                    deterministic_opponent=deterministic_opponent,
                 )
-                if stage == "pretrain" and step > 0 and rate >= switch_success:
-                    raise _SwitchReward
-
-            kwargs: dict[str, Any] = {}
-            if params is not None:
-                kwargs["restore_params"] = params
-            updates = iteration_updates(num_updates_per_batch, num_minibatches)
-            transitions = batch_size * num_minibatches * unroll_length
-            # Brax rounds each evaluation interval to complete sampling/update iterations.
-            eval_intervals = max(steps // eval_every_steps, 1)
-            iterations_per_eval = -(-steps // (eval_intervals * transitions))
-            decay = eval_intervals * iterations_per_eval * updates
-            lr_args: dict[str, Any] | None = None
-            if stage == "anneal":
-                # Same reward, critic kept: short warmup (fresh Adam), then decay to anneal_to.
-                warm = anneal_warmup_iterations * updates
-                lr_args = {
-                    "policy_lr": policy_lr_after_switch,
-                    "value_lr": learning_rate,
-                    "warmup_steps": warm,
-                    "decay_steps": max(decay - warm, 1),
-                    "final_lr_factor": anneal_to,
-                }
-            elif stage == "race" and params is not None and continue_race:
-                # Continue a race-stage run: keep the critic, no freeze.
-                warm = warmup_iterations * updates
-                lr_args = {
-                    "policy_lr": policy_lr_after_switch,
-                    "value_lr": learning_rate,
-                    "warmup_steps": warm,
-                    "decay_steps": max(decay - warm, 0),
-                    "final_lr_factor": lr_decay_to,
-                }
-            elif stage == "race" and params is not None:
-                kwargs["restore_value_fn"] = False  # critic re-initialized for the new reward
-                freeze = critic_only_iterations * updates
-                lr_args = {
-                    "policy_lr": policy_lr_after_switch,
-                    "value_lr": learning_rate,
-                    "freeze_policy_steps": freeze,
-                    "decay_steps": max(decay - freeze, 0),
-                    "final_lr_factor": lr_decay_to,
-                }
-            if lr_args is not None:
-                kwargs["optimizer_override"] = separate_lr(max_grad_norm=max_grad_norm, **lr_args)
-                schedule["policy"], schedule["value"] = lr_schedules(**lr_args)
-            switched = False
+                evaluation_env = MultiRaceEnv(
+                    num_eval_envs,
+                    eval_cfg,
+                    pool,
+                    nets,
+                    settings["multi_config"],
+                    device,
+                    seed + 10000,
+                    False,
+                )
+            else:
+                env = RaceEnv(num_envs, cfg, settings["solo_config"], device, seed)
+                evaluation_env = RaceEnv(
+                    num_eval_envs, eval_cfg, settings["solo_config"], device, seed + 10000
+                )
             try:
-                _, params, _ = ppo.train(
-                    environment=env,
-                    eval_env=eval_env,
-                    wrap_env=False,
-                    num_timesteps=steps,
-                    episode_length=max_episode_steps,
-                    num_envs=num_envs,
-                    num_eval_envs=num_eval_envs,
-                    unroll_length=unroll_length,
-                    batch_size=batch_size,
-                    num_minibatches=num_minibatches,
-                    num_updates_per_batch=num_updates_per_batch,
-                    learning_rate=learning_rate,
-                    entropy_cost=entropy_cost,
-                    discounting=discounting,
-                    gae_lambda=gae_lambda,
-                    clipping_epsilon=clipping_epsilon,
-                    max_grad_norm=max_grad_norm,
-                    normalize_observations=True,
-                    network_factory=network_factory,
-                    num_evals=eval_intervals + 1,
-                    deterministic_eval=True,
-                    # Pretrain needs success measurements to switch to the race reward.
-                    run_evals=stage == "pretrain" or intermediate_eval,
-                    log_training_metrics=True,
-                    seed=seed,
-                    progress_fn=progress,
-                    policy_params_fn=keep_params,
-                    **kwargs,
+                if stage == "multi":
+                    env.step_offset = offset
+                env_record = asdict(cfg)
+                env_record["action"] = asdict(env.action_cfg)
+                if loaded and loaded["env"]["action"] != env_record["action"]:
+                    raise ValueError("Resume action mapping differs from checkpoint")
+                if pool and env_record["action"] != pool.action:
+                    raise ValueError("Solo and multi action mappings differ")
+                checkpoint.write_json(
+                    run / f"{stage}_config.json",
+                    dict(
+                        stage=stage,
+                        env=env_record,
+                        network=network.metadata(),
+                        freq=50,
+                        settings=settings,
+                        config_path=settings["multi_config" if stage == "multi" else "solo_config"],
+                    ),
                 )
-                end_step = latest["step"]  # Brax rounds up to whole iterations
-            except _SwitchReward:
-                switched = True
-                params, end_step = latest["params"], latest["step"]
-            save_params(params, run_dir / "checkpoints" / f"{stage}_final.pkl")
-            stage_log.append(
-                {
-                    "stage": stage,
-                    "steps": end_step,
-                    "switched_on_success": switched,
-                    "ppo_iterations": end_step // transitions,
-                    "optimizer_updates": (end_step // transitions) * updates,
-                }
-            )
-            step_offset += end_step
-            if stage == "pretrain" and not switched:
-                print(
-                    f"Pre-training did not reach {switch_success:.0%} success within "
-                    f"{steps:,d} steps; stopping before the race stage.",
-                    flush=True,
+                latest = {}
+                schedules = lr_schedules(
+                    learning_rate if dense else policy_lr_after_switch,
+                    learning_rate,
+                    freeze_policy_steps=0 if params is None else critic_only_iterations * updates,
                 )
-                break
-        if stage_log and stage_log[-1]["stage"] in {"race", "anneal"}:
-            from lsy_drone_racing.control.rl_race.evaluation import evaluate
+
+                def keep(step: int, _make: Any, current: Any) -> None:
+                    latest.update(params=current, step=step)
+                    checkpoint.save(
+                        current,
+                        run / "checkpoints" / f"{stage}_latest.pkl",
+                        network=network.metadata(),
+                        env=env_record,
+                        stage=stage,
+                        steps=offset + step,
+                        league=pool.metadata() if pool else None,
+                        metadata=dict(
+                            seed=seed, run_id=run_name, evaluation=latest.get("evaluation")
+                        ),
+                    )
+
+                def progress(step: int, metrics: dict) -> None:
+                    values = {k: float(v) for k, v in metrics.items() if np.ndim(v) == 0}
+                    if "eval/episode_success" in values:
+                        values.update(eval_summary(values))
+                        latest["evaluation"] = dict(values)
+                    opt_step = (step // transitions) * updates
+                    values.update(
+                        stage=float(["pretrain", "race", "multi"].index(stage)),
+                        lr_policy=float(schedules[0](opt_step)),
+                        lr_value=float(schedules[1](opt_step)),
+                    )
+                    record = dict(
+                        stage=stage,
+                        step=offset + step,
+                        wall_seconds=time.time() - started,
+                        metrics=values,
+                    )
+                    with (run / "metrics.jsonl").open("a") as out:
+                        out.write(json.dumps(record, allow_nan=False) + "\n")
+                    if wandb_run is not None:
+                        wandb_run.log(values, step=offset + step)
+                    print(f"[{stage}] step {step:,} {values}", flush=True)
+                    threshold = switch_success if dense else sparse_switch_success
+                    if (
+                        stage != "multi"
+                        and step > 0
+                        and values.get("eval/success_rate", -1) >= threshold
+                    ):
+                        raise _SwitchReward
+
+                steps = {"pretrain": pretrain_max_steps, "race": race_steps, "multi": multi_steps}[
+                    stage
+                ]
+                kwargs = {}
+                if params is not None:
+                    kwargs.update(restore_params=params, restore_value_fn=not reset_critic)
+                    kwargs["optimizer_override"] = separate_lr(
+                        policy_lr_after_switch,
+                        learning_rate,
+                        max_grad_norm=max_grad_norm,
+                        freeze_policy_steps=critic_only_iterations * updates,
+                    )
+                switched = False
+                try:
+                    _, params, _ = ppo.train(
+                        environment=env,
+                        num_timesteps=steps,
+                        wrap_env=False,
+                        max_devices_per_host=1,
+                        num_envs=num_envs,
+                        episode_length=max_episode_steps,
+                        num_eval_envs=num_eval_envs,
+                        unroll_length=unroll_length,
+                        batch_size=batch_size,
+                        num_minibatches=num_minibatches,
+                        num_updates_per_batch=num_updates_per_batch,
+                        learning_rate=learning_rate,
+                        entropy_cost=entropy_cost,
+                        discounting=discounting,
+                        gae_lambda=gae_lambda,
+                        clipping_epsilon=clipping_epsilon,
+                        max_grad_norm=max_grad_norm,
+                        normalize_observations=True,
+                        network_factory=factory,
+                        seed=seed,
+                        eval_env=evaluation_env,
+                        num_evals=max(steps // eval_every_steps, 1) + 1,
+                        iterations_per_epoch=snapshot_interval if stage == "multi" else None,
+                        eval_every_steps=eval_every_steps if stage == "multi" else None,
+                        deterministic_eval=True,
+                        run_evals=stage != "multi" or intermediate_eval,
+                        log_training_metrics=True,
+                        progress_fn=progress,
+                        policy_params_fn=keep,
+                        **kwargs,
+                    )
+                except _SwitchReward:
+                    switched = True
+                    params = latest["params"]
+                end = latest["step"]
+                path = run / "checkpoints" / f"{stage}_final.pkl"
+                checkpoint.save(
+                    params,
+                    path,
+                    network=network.metadata(),
+                    env=env_record,
+                    stage=stage,
+                    steps=offset + end,
+                    league=pool.metadata() if pool else None,
+                    metadata=dict(seed=seed, run_id=run_name, evaluation=latest.get("evaluation")),
+                )
+                stage_log.append(
+                    dict(
+                        stage=stage,
+                        steps=end,
+                        switched_on_success=switched,
+                        checkpoint=str(path),
+                        reason="threshold_reached"
+                        if switched
+                        else (
+                            "budget_complete"
+                            if stage == "multi"
+                            else "success_threshold_not_reached"
+                        ),
+                    )
+                )
+                offset += end
+                checkpoint.write_json(run / "stages.json", stage_log)
+                if stage == "race" and switched:
+                    solo_checkpoint = str(path)
+                if stage != "multi" and not switched:
+                    break
+            finally:
+                env.close()
+                evaluation_env.close()
+        if stage_log:
+            from .evaluation import evaluate
 
             report = evaluate(
-                str(run_dir),
+                str(run),
                 stage=stage_log[-1]["stage"],
                 episodes=final_eval_episodes,
-                seeds=final_eval_seeds,
+                seeds=tuple(final_eval_seeds),
                 batch_size=final_eval_batch_size,
                 device=device,
             )
             if wandb_run is not None:
                 wandb_run.log(
-                    {f"final/{k}": v for k, v in report.items() if isinstance(v, (int, float))},
-                    step=step_offset,
+                    {f"final/{k}": v for k, v in report.items() if isinstance(v, (float, int))},
+                    step=offset,
                 )
-                wandb_run.summary["final_checkpoint"] = report["checkpoint"]
+                wandb_run.summary.update(
+                    dict(
+                        stage_complete=stage_log[-1]["stage"] == "multi",
+                        failure_reason=stage_log[-1]["reason"],
+                    )
+                )
     finally:
-        (run_dir / "stages.json").write_text(json.dumps(stage_log, indent=2) + "\n")
+        checkpoint.write_json(run / "stages.json", stage_log)
         if wandb_run is not None and wandb_project:
-            wandb_run.finish(exit_code=1 if sys.exc_info()[0] is not None else 0)
-    return str(run_dir)
+            wandb_run.finish(exit_code=bool(sys.exc_info()[0]))
+    return str(run)
 
 
 if __name__ == "__main__":

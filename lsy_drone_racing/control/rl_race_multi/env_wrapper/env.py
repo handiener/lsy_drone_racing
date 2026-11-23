@@ -21,18 +21,20 @@ import numpy as np
 from brax.envs.base import Env, State
 from jax import Array
 
-from lsy_drone_racing.control.rl_race.env_wrapper import path, rewards
-from lsy_drone_racing.control.rl_race.env_wrapper.actions import (
+from lsy_drone_racing.control.rl_race_multi.env_wrapper import path, rewards
+from lsy_drone_racing.control.rl_race_multi.env_wrapper.actions import (
     ACTION_SIZE,
     ActionConfig,
     to_command,
 )
-from lsy_drone_racing.control.rl_race.env_wrapper.observations import (
+from lsy_drone_racing.control.rl_race_multi.env_wrapper.observations import (
     ObsConfig,
     encode,
     squeeze_drone_axis,
 )
-from lsy_drone_racing.control.rl_race.env_wrapper.starts import StartConfig, build_path_start
+from lsy_drone_racing.control.rl_race_multi.env_wrapper.starts import StartConfig, build_path_start
+
+from ..network import zeros as recurrent_zeros
 
 DEFAULT_CONFIG = Path(__file__).resolve().parents[4] / "config" / "level2.toml"
 
@@ -54,6 +56,7 @@ class EnvConfig:
     """Everything that defines the training problem besides the track config file."""
 
     max_episode_steps: int = 750
+    hidden_size: int = 256
     action: ActionConfig = field(default_factory=ActionConfig)
     obs: ObsConfig = field(default_factory=ObsConfig)
     reward: rewards.RewardConfig = field(default_factory=rewards.RewardConfig)
@@ -151,6 +154,11 @@ class RaceEnv(Env):
         zeros = jnp.zeros(self.n_envs, jnp.float32)
         metrics = {name: zeros for name in METRICS}
         info = {
+            "recurrent": (
+                recurrent_zeros((self.n_envs,), self.cfg.hidden_size),
+                recurrent_zeros((self.n_envs,), self.cfg.hidden_size),
+            ),
+            "terminal_obs": encode(raw, previous_action, self.cfg.obs),
             "rng": key,
             "previous_action": previous_action,
             "official": official.astype(jnp.float32),
@@ -231,6 +239,8 @@ class RaceEnv(Env):
         previous_action = jnp.where(done[:, None], 0.0, jnp.clip(action, -1.0, 1.0))
         next_raw = squeeze_drone_axis(race_obs(data))
         info = {
+            "recurrent": state.info["recurrent"],
+            "terminal_obs": encode(raw, jnp.clip(action, -1.0, 1.0), self.cfg.obs),
             "rng": key,
             "previous_action": previous_action,
             "official": official,
@@ -261,3 +271,7 @@ class RaceEnv(Env):
         )
         data, accepted = self._path_start(data, want_path, path_key)
         return data, ~accepted
+
+    def close(self) -> None:
+        """Release only this wrapper's simulator resources."""
+        self._core.close()

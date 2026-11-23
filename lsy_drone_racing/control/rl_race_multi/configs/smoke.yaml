@@ -1,0 +1,25 @@
+# Flow/gradient validation only. Zero thresholds do NOT demonstrate learned racing.
+run_name: recurrent_smoke
+num_envs: 2
+num_eval_envs: 2
+batch_size: 2
+num_minibatches: 1
+unroll_length: 2
+num_updates_per_batch: 1
+hidden_size: 8
+policy_layers: [16]
+value_layers: [16]
+max_episode_steps: 2
+pretrain_max_steps: 4
+race_steps: 4
+multi_steps: 8
+eval_every_steps: 4
+switch_success: 0.0
+sparse_switch_success: 0.0
+official_start_prob: 1.0
+critic_only_iterations: 0
+snapshot_interval: 1
+league_capacity: 3
+final_eval_episodes: 2
+final_eval_batch_size: 2
+final_eval_seeds: [410000]

@@ -17,7 +17,7 @@ ROOT = RL_DIR.parents[2]
 
 def run_trial() -> None:
     """Train one configuration assigned by the cloud agent and publish its results."""
-    from lsy_drone_racing.control.rl_race.train import train
+    from lsy_drone_racing.control.rl_race_multi.train import train
 
     directory = Path(os.environ.get("WANDB_DIR", str(RL_DIR / "outputs")))
     directory.mkdir(parents=True, exist_ok=True)
@@ -73,11 +73,18 @@ def run_trial() -> None:
             {
                 "output_dir": str(output),
                 "checkpoint": report["checkpoint"],
-                "training_complete": True,
+                "training_complete": report["stage"] == "multi",
+                "completed_stage": report["stage"],
             }
         )
         checkpoint_bytes = Path(report["checkpoint"]).stat().st_size
-        estimated_gb = checkpoint_bytes * trial_count / 1e9
+        league_manifest = output / "league" / "manifest.json"
+        opponent_entries = (
+            json.loads(league_manifest.read_text())["entries"] if league_manifest.exists() else []
+        )
+        weight_files = {Path(report["checkpoint"]).resolve()}
+        weight_files.update(Path(entry["checkpoint"]).resolve() for entry in opponent_entries)
+        estimated_gb = sum(file.stat().st_size for file in weight_files) * trial_count / 1e9
         run.summary.update(
             {"checkpoint_bytes": checkpoint_bytes, "estimated_sweep_checkpoint_gb": estimated_gb}
         )
@@ -89,6 +96,26 @@ def run_trial() -> None:
         artifact.add_file(str(report_file))
         artifact.add_file(str(output / f"{report['stage']}_config.json"))
         artifact.add_file(str(output / "stages.json"))
+        artifact.add_file(str(output / "settings.json"))
+        for track in ("solo_track.toml", "multi_track.toml"):
+            if (output / track).exists():
+                artifact.add_file(str(output / track))
+        manifest = output / "league" / "manifest.json"
+        if manifest.exists():
+            artifact.add_file(str(manifest))
+            # League metadata references local paths: upload eligible opponent models
+            # as well, so artifacts can be rehydrated rather than losing the pool.
+            for index, entry in enumerate(json.loads(manifest.read_text())["entries"]):
+                opponent = Path(entry["checkpoint"])
+                if included and opponent.exists():
+                    artifact.add_file(str(opponent), name=f"opponents/{index:03d}.pkl")
+            if included:
+                portable = json.loads(manifest.read_text())
+                for index, entry in enumerate(portable["entries"]):
+                    entry["checkpoint"] = f"opponents/{index:03d}.pkl"
+                portable_path = output / "league" / "artifact_manifest.json"
+                portable_path.write_text(json.dumps(portable, indent=2) + "\n")
+                artifact.add_file(str(portable_path), name="league_manifest.json")
         run.log_artifact(artifact)
         exit_code = 0
     finally:

@@ -21,12 +21,16 @@ class ObsConfig:
     n_gates: int = 2
     n_obstacles: int = 4
 
+    def __post_init__(self) -> None:
+        if self.n_gates != 2 or self.n_obstacles != 4:
+            raise ValueError("Recurrent league requires two gates and four obstacles (57D)")
+
     @property
     def size(self) -> int:
         """Flattened feature dimension for a ``action_dim``-free layout plus 4 previous actions."""
         # pos 3, rotation 9, body vel 3, ang vel 3, previous action 4, progress 1,
         # per gate: center 3 + normal 3 + valid 1, per obstacle: relative position 3.
-        return 23 + 7 * self.n_gates + 3 * self.n_obstacles
+        return 57
 
 
 def squeeze_drone_axis(raw: dict[str, Array]) -> dict[str, Array]:
@@ -34,7 +38,7 @@ def squeeze_drone_axis(raw: dict[str, Array]) -> dict[str, Array]:
     return {key: value[:, 0] for key, value in raw.items()}
 
 
-def encode(raw: dict[str, Array], previous_action: Array, cfg: ObsConfig) -> Array:
+def encode_ego(raw: dict[str, Array], previous_action: Array, cfg: ObsConfig) -> Array:
     """Encode one batch of squeezed observations into features of shape (n, cfg.size).
 
     Args:
@@ -85,3 +89,24 @@ def encode(raw: dict[str, Array], previous_action: Array, cfg: ObsConfig) -> Arr
             nearest = jnp.concatenate([nearest, jnp.zeros((count, missing, 3))], axis=1)
         features.append(nearest.reshape(count, -1))
     return jnp.concatenate(features, axis=1).astype(jnp.float32)
+
+
+def encode(
+    raw: dict[str, Array],
+    previous_action: Array,
+    cfg: ObsConfig,
+    opponent: dict[str, Array] | None = None,
+    presence: Array | None = None,
+) -> Array:
+    """49 unchanged ego features followed by body-relative opponent features."""
+    ego = encode_ego(raw, previous_action, cfg)
+    if opponent is None:
+        return jnp.concatenate([ego, jnp.zeros((*ego.shape[:-1], 8))], axis=-1)
+    rotation = Rotation.from_quat(raw["quat"]).as_matrix()
+    world_to_body = jnp.swapaxes(rotation, -1, -2)
+    relative_pos = jnp.einsum("bij,bj->bi", world_to_body, opponent["pos"] - raw["pos"])
+    relative_vel = jnp.einsum("bij,bj->bi", world_to_body, opponent["vel"] - raw["vel"])
+    delta = (opponent["n_gates_passed"] - raw["n_gates_passed"]) / raw["gate_sequence"].shape[-1]
+    mask = jnp.ones_like(delta) if presence is None else presence.astype(jnp.float32)
+    extra = jnp.concatenate([relative_pos, relative_vel, delta[:, None], mask[:, None]], -1)
+    return jnp.concatenate([ego, jnp.where(mask[:, None] > 0, extra, 0.0)], -1)

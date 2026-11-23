@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 import jax
 import jax.numpy as jnp
 
-from lsy_drone_racing.control.rl_race.env_wrapper import path
+from lsy_drone_racing.control.rl_race_multi.env_wrapper import path
 
 if TYPE_CHECKING:
     from collections.abc import Callable

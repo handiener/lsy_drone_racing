@@ -19,7 +19,20 @@ from dataclasses import dataclass, replace
 import jax.numpy as jnp
 from jax import Array
 
-COMPONENTS = ("gate", "lap", "time", "ang_vel", "crash", "progress", "lap_bonus")
+COMPONENTS = (
+    "gate",
+    "lap",
+    "time",
+    "ang_vel",
+    "crash",
+    "progress",
+    "lap_bonus",
+    "competition_progress",
+    "ranking",
+    "proximity",
+    "inter_collision",
+    "outcome",
+)
 
 
 @dataclass(frozen=True)
@@ -34,6 +47,12 @@ class RewardConfig:
     progress: float = 0.0
     path_lateral: float = 1.0  # Weight of the distance-to-path term in the path potential.
     lap_bonus: float = 0.0  # Per second the lap is faster than lap_ref (negative if slower).
+    competition_progress: float = 0.1
+    ranking: float = 0.1
+    proximity: float = 0.02
+    proximity_distance: float = 0.4
+    inter_collision: float = 25.0
+    outcome: float = 1.0
     lap_ref: float = 4.0  # Reference lap time of the lap bonus, in seconds.
 
 
@@ -86,5 +105,31 @@ def compute(
         * event["finished"].astype(jnp.float32)
         * (cfg.lap_ref - lap_seconds),
     }
+    components.update(
+        {
+            name: jnp.zeros_like(event["gates"], dtype=jnp.float32)
+            for name in (
+                "competition_progress",
+                "ranking",
+                "proximity",
+                "inter_collision",
+                "outcome",
+            )
+        }
+    )
     total = sum(components.values())
     return total.astype(jnp.float32), components
+
+
+def competitive(cfg, components, ego_delta, lead_delta, distance, pair_collision, win, loss, draw):
+    """Conservative competitive terms; inter-collision replaces, never doubles, crash cost."""
+    components = dict(components)
+    components.update(
+        competition_progress=cfg.competition_progress * ego_delta,
+        ranking=cfg.ranking * lead_delta,
+        proximity=-cfg.proximity
+        * jnp.maximum(1 - distance / max(cfg.proximity_distance, 1e-6), 0.0),
+        inter_collision=-max(cfg.inter_collision - cfg.crash, 0.0) * pair_collision,
+        outcome=cfg.outcome * (win - loss) - 0.5 * cfg.outcome * pair_collision,
+    )
+    return sum(components.values()), components

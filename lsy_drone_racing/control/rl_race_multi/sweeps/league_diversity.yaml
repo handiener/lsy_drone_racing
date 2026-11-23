@@ -1,0 +1,18 @@
+# Style names are hypotheses: qualify and review models using actual evaluation.
+name: recurrent-league-diversity
+program: lsy_drone_racing/control/rl_race_multi/sweep.py
+method: grid
+metric: {name: final/leaderboard_score, goal: minimize}
+command: ["${env}", pixi, run, -e, gpu, python, -m, lsy_drone_racing.control.rl_race_multi.sweep]
+parameters:
+  hidden_size: {value: 256}
+  policy_layers: {value: [512, 512]}
+  value_layers: {value: [512, 512]}
+  experiment:
+    values:
+      - {name: fast_candidate, seed: 1, race_time: 0.4, proximity_penalty: 0.01}
+      - {name: safe_candidate, seed: 2, race_crash: 30, inter_collision_penalty: 35, proximity_penalty: 0.05}
+      - {name: balanced_candidate, seed: 3, race_time: 0.3, race_crash: 20}
+      - {name: conservative_candidate, seed: 4, race_time: 0.2, race_crash: 30, proximity_penalty: 0.08}
+  upload_checkpoint: {value: true}
+  sweep_trial_count: {value: 4}
