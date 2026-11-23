@@ -1,15 +1,19 @@
 """Onboard telemetry logging helpers for real Crazyflie deployments.
 
 The radio link carries firmware log blocks of at most ``LOG_BLOCK_BYTES`` data bytes each. This
-module packs log variables into blocks, stores received samples, and writes and reads the log file.
+module packs log variables into blocks, writes received samples to the log file, and reads it.
 It has no dependency on ``cflib2``, so it can be tested without hardware. The radio side lives in
 [Crazyflie][lsy_drone_racing.utils.crazyflie.Crazyflie].
 
-The log file is JSON Lines. The first line holds metadata (firmware version, firmware parameters,
-logged variables and their blocks, the host clock anchor). Every further line is one sample of one
-log block::
+The log file is JSON Lines and is written while logging runs. The first line holds metadata
+(firmware version, firmware parameters, logged variables and their blocks, the host clock anchor).
+Every further line is one sample of one log block::
 
     {"t_host_ns": ..., "t_onboard_ms": ..., "block": 0, "values": {"gyro.x": ..., ...}}
+
+When logging stops cleanly, a last summary line ``{"kind": "onboard_log_summary", ...}`` holds the
+sample count and errors. It is missing if the host process died, in which case the file still holds
+all samples up to the last flush.
 
 ``t_host_ns`` is ``time.monotonic_ns()`` on the host when the sample arrived, ``t_onboard_ms`` the
 timestamp of the log packet. Samples of different blocks share the onboard clock. The host time
@@ -22,7 +26,7 @@ import json
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 import numpy as np
 
@@ -129,7 +133,11 @@ def pack_log_blocks(
 
 @dataclass
 class OnboardLog:
-    """Samples and metadata of one onboard logging session."""
+    """Metadata and file writer of one onboard logging session.
+
+    Samples are written to the file as they arrive and flushed every ``flush_every`` samples, so a
+    crash of the host process loses at most the last fraction of a second.
+    """
 
     path: Path
     period_ms: int
@@ -138,56 +146,92 @@ class OnboardLog:
     missing: list[str] = field(default_factory=list)
     firmware: dict[str, Any] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
-    samples: list[tuple[int, int, int, dict[str, float]]] = field(default_factory=list)
+    n_samples: int = 0
+    flush_every: int = 64
     wall_time_ns: int = field(default_factory=time.time_ns)
     monotonic_ns: int = field(default_factory=time.monotonic_ns)
+    _file: TextIO | None = field(default=None, init=False, repr=False)
+
+    def open(self) -> None:
+        """Create the file and write the metadata line. Call once the blocks are known."""
+        if self._file is not None:
+            raise RuntimeError("Onboard log file is already open")
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._file = self.path.open("w")
+        self._file.write(json.dumps(self.metadata()) + "\n")
+        self._file.flush()
 
     def append(self, t_onboard_ms: int, block: int, values: dict[str, float]) -> None:
-        """Store one received sample with its host arrival time."""
-        self.samples.append((time.monotonic_ns(), int(t_onboard_ms), block, dict(values)))
+        """Write one received sample with its host arrival time."""
+        if self._file is None:
+            raise RuntimeError("Open the onboard log before appending samples")
+        sample = {
+            "t_host_ns": time.monotonic_ns(),
+            "t_onboard_ms": int(t_onboard_ms),
+            "block": block,
+            "values": dict(values),
+        }
+        self._file.write(json.dumps(sample) + "\n")
+        self.n_samples += 1
+        if self.n_samples % self.flush_every == 0:
+            self._file.flush()
+
+    def close(self) -> Path:
+        """Write the summary line (sample count, errors), close the file and return its path."""
+        if self._file is None:
+            raise RuntimeError("Onboard log file is not open")
+        summary = {
+            "kind": "onboard_log_summary",
+            "n_samples": self.n_samples,
+            "errors": self.errors,
+        }
+        try:
+            self._file.write(json.dumps(summary) + "\n")
+        finally:
+            self._file.close()
+            self._file = None
+        return self.path
 
     def metadata(self) -> dict[str, Any]:
         """Return the metadata written as the first line of the log file."""
         return {
             "kind": "onboard_log_metadata",
-            "format_version": 1,
+            "format_version": 2,
             "period_ms": self.period_ms,
             "blocks": self.blocks,
             "types": self.types,
             "missing_variables": self.missing,
             "firmware": self.firmware,
-            "errors": self.errors,
-            "n_samples": len(self.samples),
+            "errors": list(self.errors),  # Errors while starting. Later ones go to the summary.
             "clock_anchor": {"wall_time_ns": self.wall_time_ns, "monotonic_ns": self.monotonic_ns},
         }
 
-    def save(self) -> Path:
-        """Write metadata and samples to ``path`` as JSON Lines and return the path."""
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("w") as f:
-            f.write(json.dumps(self.metadata()) + "\n")
-            for t_host_ns, t_onboard_ms, block, values in self.samples:
-                sample = {
-                    "t_host_ns": t_host_ns,
-                    "t_onboard_ms": t_onboard_ms,
-                    "block": block,
-                    "values": values,
-                }
-                f.write(json.dumps(sample) + "\n")
-        return self.path
-
 
 def load_onboard_log(path: str | Path) -> tuple[dict[str, Any], dict[str, dict[str, np.ndarray]]]:
-    """Load a log file written by [OnboardLog.save][lsy_drone_racing.utils.onboard_log.OnboardLog].
+    """Load a log file written by [OnboardLog][lsy_drone_racing.utils.onboard_log.OnboardLog].
+
+    Files of crashed runs have no summary line and may end in a truncated line. Both are accepted,
+    and ``metadata["complete"]`` tells whether the summary was found. The summary's ``n_samples``
+    and ``errors`` replace the metadata entries.
 
     Returns:
         The metadata, and per variable the arrays ``t_onboard_ms``, ``t_host_ns`` and ``value``.
     """
     with Path(path).open() as f:
         metadata = json.loads(f.readline())
+        metadata["complete"] = False
+        n_samples = 0
         columns: dict[str, dict[str, list[float]]] = {}
         for line in f:
-            sample = json.loads(line)
+            try:
+                sample = json.loads(line)
+            except json.JSONDecodeError:  # Last line of a crashed run
+                break
+            if sample.get("kind") == "onboard_log_summary":
+                metadata["errors"] = metadata.get("errors", []) + sample["errors"]
+                metadata["complete"] = True
+                continue
+            n_samples += 1
             for name, value in sample["values"].items():
                 column = columns.setdefault(
                     name, {"t_onboard_ms": [], "t_host_ns": [], "value": []}
@@ -195,6 +239,7 @@ def load_onboard_log(path: str | Path) -> tuple[dict[str, Any], dict[str, dict[s
                 column["t_onboard_ms"].append(sample["t_onboard_ms"])
                 column["t_host_ns"].append(sample["t_host_ns"])
                 column["value"].append(value)
+    metadata["n_samples"] = n_samples
     data = {
         name: {
             "t_onboard_ms": np.asarray(column["t_onboard_ms"], dtype=np.int64),
