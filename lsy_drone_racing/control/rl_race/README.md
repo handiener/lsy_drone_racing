@@ -109,6 +109,43 @@ one iteration makes `num_minibatches × num_updates_per_batch` SGD updates. With
 12B requested race steps round to **3,000 PPO iterations / 384,000 SGD updates**.
 Changing batch size changes these counts; it is not only a VRAM setting.
 
+## Optional sim-to-real trial
+
+Tuesday's two selected weights are in `outputs/sim2real_fixed/` and
+`outputs/sim2real_mixed/`. Each has a ready-to-deploy `exported/` directory and its
+matching selected checkpoint. See [the trial notes](outputs/README.md) for parameters,
+results and model selection. These are robustness trials; the real gate-3 cause is unresolved.
+
+Only two wrapper profiles remain; the default `--sim_to_real=none` disables the wrapper:
+
+- `reference`: motor response ×0.8, total motor capacity 0.70 N, angular-rate input age 40 ms.
+- `estimator_mix`: per-episode response 0.75–0.90, capacity 0.68–0.74 N, and either
+  angular-rate input age 20/40/60 ms or low-pass time constant 20–60 ms.
+
+Training keeps 35% nominal episodes. Only the policy angular-rate observation is altered;
+position, attitude, linear velocity, reward and controller gains are unchanged.
+
+To train fresh copies from the fastest eligible completed sweep checkpoint:
+
+```bash
+pixi run -e gpu python -m lsy_drone_racing.control.rl_race.finetune_sim_to_real
+```
+
+New runs go to `outputs/sim2real_training/`, leaving Tuesday's selected weights untouched.
+Each profile uses 1,073,741,824 transitions, 16384 environments, batch 4096, 32 minibatches,
+unroll 32 and four updates per batch. Intermediate evaluation is disabled; four curve
+checkpoints and training metrics are saved. The exported new actor is the final checkpoint;
+intermediate checkpoints can be evaluated with `--checkpoint=step_XXXXXXXXXXXX`.
+
+To evaluate a run in nominal simulation and both retained wrappers:
+
+```bash
+pixi run -e gpu python -m lsy_drone_racing.control.rl_race.assess_sim_to_real \
+  --run_dir=lsy_drone_racing/control/rl_race/outputs/sim2real_mixed
+```
+
+This writes three evaluation reports with paired seeds. No historical flight logs are needed.
+
 ## 2. Run a sweep on one or more machines
 
 Create a sweep **once**:
