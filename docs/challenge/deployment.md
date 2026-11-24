@@ -70,3 +70,75 @@ python scripts/save_track_as_config.py --config <config_name>.toml --save_config
 ```
 
 The script saves the measured gate, obstacle, and drone starting poses to `config/<output_name>.toml`.
+
+## Recording hardware deployments
+
+Enable the host recorder in the deployment terminal:
+
+```bash
+python scripts/deploy.py --config level2.toml --record=True
+```
+
+Each invocation creates a new `runs/deploy_<UTC timestamp>/` directory. To choose the
+location, pass `--output_dir runs/hardware_001` (this also enables recording).
+Existing directories are refused before connecting to the drone.
+
+The directory contains:
+
+- `metadata.json`: resolved configuration, source/config hashes, Git revision and dirty
+  status, command-line arguments, and a wall-clock/monotonic-clock anchor.
+- `events.jsonl`: timestamped events, one JSON object per line. Policy-loop events share
+  a zero-based `step` index. Observation events contain copied policy inputs and current
+  raw mocap pose snapshots. Action events contain the controller output and inference
+  start/end times. Transition events contain the immediate post-send observation, reward,
+  termination flags, and environment-step timing. Loop events contain elapsed processing
+  time and the nominal deadline (excluding the subsequent sleep).
+- `summary.json`: writer status and record counts. `complete` means recording finalized
+  without a recorder error; it does **not** mean the drone completed the track.
+
+Controllers may optionally provide `enable_deployment_recording(obs)` and
+`deployment_diagnostics()` hooks for additional model metadata and policy diagnostics.
+
+The Crazyflie wrapper also records converted attitude/full-state commands after submission
+to cflib2, external mocap poses sent to the onboard estimator, high-level return/landing
+commands, and emergency stops. Submission does not confirm receipt or execution onboard.
+External-pose events continue through return/landing while the connection remains open;
+policy-loop observations stop when the race loop exits. Exceptions, interrupts, race-end,
+and cleanup events delimit the phases.
+
+Data is copied into a bounded queue, serialized on a background thread, and flushed roughly
+every 0.2 seconds. Queue overflow or a writer failure disables further recording and emits
+an error without stopping flight control. Cleanup drains queued records **after** closing
+hardware. Ctrl+C is still passed through to the environment's emergency-stop handling.
+Abrupt process termination or power loss can lose queued/buffered data and leave no summary;
+read complete JSONL lines and ignore a partial final line. Flushes are not an fsync guarantee.
+
+All event timestamps use `time.monotonic_ns()` on the host. Mocap samples have no sensor
+acquisition timestamp or freshness guarantee here, and estimated states are asynchronous
+snapshots, not atomic measurements. `next_obs` is read immediately after sending a command;
+it is not a measurement of the response over a complete 20 ms control interval. Copying and
+policy diagnostics add some host overhead; inspect loop timing for overruns.
+
+Add `--onboard_log=True` to capture onboard IMU, motor outputs, battery, controller signals,
+and attitude alongside the host recording in `onboard.jsonl`. Both streams use the same host
+monotonic clock; onboard samples also include firmware timestamps. Firmware variables that
+are unavailable are listed in the onboard metadata. Onboard logging starts after reset and
+continues through return/landing until the drone closes. Its final summary is independent
+of the host `summary.json`. With only `--onboard_log=True`, output stays in `logs/onboard/`.
+Record ROS topics separately with `ros2 bag` for full-rate, source-stamped mocap streams.
+
+For machine-specific settings, copy `config/level2.toml` to `config/level2.local.toml`, add
+`/config/level2.local.toml` to `.git/info/exclude`, and deploy with
+`--config level2.local.toml`. Keep radio ID/channel changes in that local file. It is a full
+configuration copy; reconcile it manually when shared configuration defaults change.
+
+For example, read policy actions without ROS or hardware:
+
+```python
+import json
+from pathlib import Path
+
+run = Path("runs/hardware_001")
+with (run / "events.jsonl").open() as stream:
+    actions = [event for line in stream if (event := json.loads(line))["kind"] == "action"]
+```
