@@ -55,7 +55,7 @@ METRICS = (
 class EnvConfig:
     """Everything that defines the training problem besides the track config file."""
 
-    max_episode_steps: int = 750
+    max_episode_steps: int = 1250
     hidden_size: int = 256
     action: ActionConfig = field(default_factory=ActionConfig)
     obs: ObsConfig = field(default_factory=ObsConfig)

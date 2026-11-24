@@ -405,7 +405,9 @@ def test_critic_reset_preserves_actor_and_normalizer():
 
 
 @pytest.mark.parametrize("failure_stage", ["pretrain", "race"])
-def test_unmet_solo_threshold_never_advances(tmp_path, monkeypatch, failure_stage):
+def test_unmet_solo_threshold_never_advances(
+    tmp_path, monkeypatch, failure_stage, capsys: pytest.CaptureFixture[str]
+):
     import wandb
 
     from lsy_drone_racing.control.rl_race_multi import evaluation
@@ -429,6 +431,7 @@ def test_unmet_solo_threshold_never_advances(tmp_path, monkeypatch, failure_stag
         calls.append(stage)
         assert kwargs["run_evals"] is True
         kwargs["policy_params_fn"](4, None, params)
+        kwargs["progress_fn"](0, {"episode/policy_loss": 1.0})
         kwargs["progress_fn"](
             4,
             {
@@ -470,6 +473,13 @@ def test_unmet_solo_threshold_never_advances(tmp_path, monkeypatch, failure_stag
     assert evaluations == [failure_stage]
     assert calls == (["pretrain"] if failure_stage == "pretrain" else ["pretrain", "race"])
     assert (output / "checkpoints" / f"{failure_stage}_final.pkl").exists()
+    terminal = capsys.readouterr().out
+    assert "[pretrain eval]" in terminal
+    assert "episode/policy_loss" not in terminal
+    assert "eval/episode_success" not in terminal
+    assert "success_threshold_not_reached" in terminal
+    records = [json.loads(line) for line in (output / "metrics.jsonl").read_text().splitlines()]
+    assert any("episode/policy_loss" in record["metrics"] for record in records)
 
 
 def test_default_256_actor_critic_forward():
@@ -573,7 +583,9 @@ def test_official_full_race_env_cannot_accidentally_feed_invalid_ppo_samples():
         ppo.train(env, num_timesteps=4)
 
 
-def test_warm_resume_retains_global_progress_but_starts_new_rollouts(tmp_path, monkeypatch):
+def test_warm_resume_retains_global_progress_but_starts_new_rollouts(
+    tmp_path, monkeypatch, capsys: pytest.CaptureFixture[str]
+):
     import wandb
 
     from lsy_drone_racing.control.rl_race_multi import evaluation
@@ -632,3 +644,6 @@ def test_warm_resume_retains_global_progress_but_starts_new_rollouts(tmp_path, m
     result = checkpoint.load(output / "checkpoints/multi_final.pkl")
     assert result["steps"] == 104
     assert json.loads((output / "settings.json").read_text())["resume_from_steps"] == 100
+    terminal = capsys.readouterr().out
+    assert "training/total_loss" not in terminal
+    assert "[multi start]" in terminal and "[multi end]" in terminal

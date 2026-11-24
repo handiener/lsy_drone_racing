@@ -41,6 +41,11 @@ Intermediate evaluation during race/anneal is **off by default**
 evaluation in every stage.
 Final evaluation after race/anneal still runs regardless of this flag.
 
+The long-track recipe defaults to `race_time=0.05` per control step, or 2.5 reward
+units per second at 50 Hz. This reduces the previous `0.3` penalty sixfold so
+longer successful flights are not overwhelmed by time costs. Explicit CLI or
+sweep values override this default; historical sweep YAMLs retain their values.
+
 <details>
 <summary><strong>Training arguments: meaning and actual defaults</strong></summary>
 
@@ -60,7 +65,7 @@ Boolean/list examples: `--continue_race=True`, `--policy_layers='(256,256)'`.
 | `--thrust_max_fraction` | `1.0` | Upper fraction of the official thrust range, between 0 and 1. |
 | `--n_gates` | `2` | Upcoming gates encoded in the observation: 2 gives 49D; 3 gives 56D. |
 | `--official_start_prob` | `0.5` | Official-start probability; remaining starts are sampled along the path. |
-| `--max_episode_steps` | `750` | Maximum control steps per episode (50 Hz). |
+| `--max_episode_steps` | `1250` | Maximum control steps per episode: 25 seconds at 50 Hz. |
 | `--pretrain_max_steps` | `2000000000` | Maximum pretrain environment transitions; may switch earlier. |
 | `--pretrain_crash` | `20.0` | Pretrain crash penalty. |
 | `--pretrain_time` | `0.2` | Pretrain time penalty per control step. |
@@ -78,7 +83,7 @@ Boolean/list examples: `--continue_race=True`, `--policy_layers='(256,256)'`.
 | `--anneal_steps` | `0` | Anneal transitions after race; 0 disables anneal. |
 | `--anneal_to` | `0.1` | Final learning-rate multiplier during anneal. |
 | `--anneal_warmup_iterations` | `5` | Learning-rate warmup iterations during anneal. |
-| `--race_time` | `0.3` | Race time penalty per control step. |
+| `--race_time` | `0.05` | Race time penalty per control step (2.5 per second at 50 Hz). |
 | `--race_crash` | `20.0` | Race crash penalty. |
 | `--race_gate` | `5.0` | Reward per gate passed. |
 | `--race_lap` | `10.0` | Reward for finishing a lap. |

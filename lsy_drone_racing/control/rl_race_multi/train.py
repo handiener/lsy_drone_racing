@@ -55,13 +55,13 @@ def train(
     thrust_max_fraction: float = 1.0,
     n_gates: int = 2,
     official_start_prob: float = 0.5,
-    max_episode_steps: int = 1500,
-    pretrain_max_steps: int = 20_971_520,
-    race_steps: int = 33_554_432,
-    multi_steps: int = 41_943_040,
+    max_episode_steps: int = 1250,
+    pretrain_max_steps: int = 2_013_265_920,
+    race_steps: int = 2_516_582_400,
+    multi_steps: int = 2_684_354_560,
     switch_success: float = 0.3,
-    sparse_switch_success: float = 0.8,
-    critic_only_iterations: int = 10,
+    sparse_switch_success: float = 0.7,
+    critic_only_iterations: int = 80,
     reset_critic: bool = True,
     start_params: str | None = None,
     start_stage: str = "pretrain",
@@ -73,7 +73,7 @@ def train(
     pretrain_time: float = 0.2,
     pretrain_progress: float = 15.0,
     pretrain_path_lateral: float = 1.0,
-    race_time: float = 0.3,
+    race_time: float = 0.05,
     race_crash: float = 20.0,
     race_gate: float = 5.0,
     race_lap: float = 10.0,
@@ -85,11 +85,11 @@ def train(
     proximity_distance: float = 0.4,
     inter_collision_penalty: float = 25.0,
     outcome_reward: float = 1.0,
-    num_envs: int = 256,
+    num_envs: int = 16384,
     unroll_length: int = 32,
-    batch_size: int = 128,
-    num_minibatches: int = 8,
-    num_updates_per_batch: int = 2,
+    batch_size: int = 4096,
+    num_minibatches: int = 4,
+    num_updates_per_batch: int = 4,
     learning_rate: float = 3e-4,
     policy_lr_after_switch: float = 1e-4,
     entropy_cost: float = 5e-3,
@@ -102,14 +102,14 @@ def train(
     policy_layers: tuple[int, ...] = (512, 512),
     value_layers: tuple[int, ...] = (512, 512),
     activation: str = "leaky_relu",
-    eval_every_steps: int = 4_194_304,
-    num_eval_envs: int = 32,
+    eval_every_steps: int = 167_772_160,
+    num_eval_envs: int = 128,
     intermediate_eval: bool = False,
     final_eval_episodes: int = 16,
     final_eval_seeds: tuple[int, ...] = (410000,),
     final_eval_batch_size: int = 16,
-    snapshot_interval: int = 64,
-    league_capacity: int = 32,
+    snapshot_interval: int = 256,
+    league_capacity: int = 64,
     solo_opponent_fraction: float = 0.0,
     sampling_exponent: float = 0.9,
     swap_starts: bool = True,
@@ -388,7 +388,17 @@ def train(
                         out.write(json.dumps(record, allow_nan=False) + "\n")
                     if wandb_run is not None:
                         wandb_run.log(values, step=offset + step)
-                    print(f"[{stage}] step {step:,} {values}", flush=True)
+                    if "eval/episode_success" in values:
+                        lap = values["eval/lap_time"]
+                        lap_text = f"{lap:.2f}s" if values["eval/success_rate"] > 0 else "--"
+                        print(
+                            f"[{stage} eval] step {offset + step:,} | "
+                            f"success {values['eval/success_rate']:.1%} | "
+                            f"gates {values.get('eval/episode_gates', 0):.2f} | "
+                            f"crash {values.get('eval/episode_crashed', 0):.1%} | "
+                            f"lap {lap_text} | {(time.time() - started) / 60:.1f} min",
+                            flush=True,
+                        )
                     threshold = switch_success if dense else sparse_switch_success
                     if (
                         stage != "multi"
@@ -400,6 +410,12 @@ def train(
                 steps = {"pretrain": pretrain_max_steps, "race": race_steps, "multi": multi_steps}[
                     stage
                 ]
+                print(
+                    f"[{stage} start] budget {steps:,} transitions | "
+                    f"{num_envs:,} worlds | {transitions:,} transitions/iteration | "
+                    f"intermediate eval {'on' if stage != 'multi' or intermediate_eval else 'off'}",
+                    flush=True,
+                )
                 kwargs = {}
                 if params is not None:
                     kwargs.update(restore_params=params, restore_value_fn=not reset_critic)
@@ -475,6 +491,11 @@ def train(
                 )
                 offset += end
                 checkpoint.write_json(run / "stages.json", stage_log)
+                print(
+                    f"[{stage} end] stage steps {end:,} | total steps {offset:,} | "
+                    f"{stage_log[-1]['reason']} | checkpoint {path}",
+                    flush=True,
+                )
                 if stage == "race" and switched:
                     solo_checkpoint = str(path)
                 if stage != "multi" and not switched:

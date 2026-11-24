@@ -53,7 +53,7 @@ METRICS = (
 class EnvConfig:
     """Everything that defines the training problem besides the track config file."""
 
-    max_episode_steps: int = 750
+    max_episode_steps: int = 1250
     action: ActionConfig = field(default_factory=ActionConfig)
     obs: ObsConfig = field(default_factory=ObsConfig)
     reward: rewards.RewardConfig = field(default_factory=rewards.RewardConfig)

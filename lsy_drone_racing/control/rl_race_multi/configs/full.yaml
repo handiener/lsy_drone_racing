@@ -1,4 +1,4 @@
-# Estimated 3–5 hour recipe for one RTX 5090 (32 GB); not benchmarked.
+# RTX 5090 short calibration: Solo ~18.7 GiB, heterogeneous Multi ~20.9 GiB.
 run_name: recurrent_league_s1
 seed: 1
 roll_limit_deg: 80
@@ -10,20 +10,24 @@ value_layers: [512, 512]
 activation: leaky_relu
 n_gates: 2
 unroll_length: 32
-num_envs: 256
-batch_size: 128
-num_minibatches: 8
-num_updates_per_batch: 2
-max_episode_steps: 1500
-pretrain_max_steps: 20971520
-race_steps: 33554432
-multi_steps: 41943040
+num_envs: 16384
+batch_size: 4096
+num_minibatches: 4
+num_updates_per_batch: 4
+# Match the reference single-policy critic warmup in transitions/optimizer steps.
+critic_only_iterations: 80
+max_episode_steps: 1250
+# Per control step: 2.5 reward units/second at 50 Hz, shared by race and multi.
+race_time: 0.05
+pretrain_max_steps: 2013265920
+race_steps: 2516582400
+multi_steps: 2684354560
 switch_success: 0.3
-sparse_switch_success: 0.8
-eval_every_steps: 4194304
-num_eval_envs: 32
-snapshot_interval: 64
-league_capacity: 32
+sparse_switch_success: 0.7
+eval_every_steps: 167772160
+num_eval_envs: 128
+snapshot_interval: 256
+league_capacity: 64
 solo_opponent_fraction: 0.0
 sampling_exponent: 0.9
 # Short final check only; use more episodes/seeds for model comparisons.

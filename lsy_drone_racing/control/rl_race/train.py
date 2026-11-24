@@ -124,7 +124,7 @@ def train(
     thrust_max_fraction: float = 1.0,
     n_gates: int = 2,
     official_start_prob: float = 0.5,
-    max_episode_steps: int = 750,
+    max_episode_steps: int = 1250,
     # Schedule.
     pretrain_max_steps: int = 2_000_000_000,
     pretrain_crash: float | None = 20.0,
@@ -143,7 +143,7 @@ def train(
     anneal_steps: int = 0,
     anneal_to: float = 0.1,
     anneal_warmup_iterations: int = 5,
-    race_time: float | None = 0.3,
+    race_time: float | None = 0.05,
     race_crash: float | None = 20.0,
     race_gate: float | None = 5.0,
     race_lap: float | None = 10.0,
