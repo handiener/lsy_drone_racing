@@ -19,7 +19,7 @@ pretrain_max_steps: 20971520
 race_steps: 33554432
 multi_steps: 41943040
 switch_success: 0.3
-sparse_switch_success: 0.9
+sparse_switch_success: 0.8
 eval_every_steps: 4194304
 num_eval_envs: 32
 snapshot_interval: 64

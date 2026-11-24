@@ -60,7 +60,7 @@ def train(
     race_steps: int = 33_554_432,
     multi_steps: int = 41_943_040,
     switch_success: float = 0.3,
-    sparse_switch_success: float = 0.9,
+    sparse_switch_success: float = 0.8,
     critic_only_iterations: int = 10,
     reset_critic: bool = True,
     start_params: str | None = None,

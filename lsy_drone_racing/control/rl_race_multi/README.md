@@ -36,7 +36,7 @@ those dimensions to zero, including after solo→multi transitions.
 
 1. `pretrain`: solo dense-path reward and the existing path-start mechanism.
    Official-start evaluation success ≥ `switch_success` (default 0.3) switches to race.
-2. `race`: solo sparse reward; success ≥ `sparse_switch_success` (default 0.9)
+2. `race`: solo sparse reward; success ≥ `sparse_switch_success` (default 0.8)
    freezes this policy as the solo opponent and starts multi training.
 3. `multi`: one learner and one frozen opponent in the **same two-drone world**.
    Only learner trajectories enter PPO. No IPPO or shared-policy updates.
@@ -106,7 +106,7 @@ Solo evaluation uses 32 worlds every 4,194,304 transitions (128 iterations),
 in addition to its initial evaluation. Multi intermediate evaluation is off.
 All three budgets divide their host epoch sizes exactly, so this recipe adds
 no training iterations through epoch rounding. Solo stages may switch earlier
-at the unchanged 30% / 90% success thresholds, or stop below threshold at budget
+at the 30% / 80% success thresholds, or stop below threshold at budget
 exhaustion. Logs/checkpoints retain cumulative step offsets across stages.
 
 Final evaluation is a short check: 16 episodes **per opponent per seed**, seed
