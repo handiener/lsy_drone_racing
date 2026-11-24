@@ -1,0 +1,334 @@
+{
+  "config": {
+    "controller": {
+      "file": "rl_race_controller.py"
+    },
+    "deploy": {
+      "check_drone_start_pos": true,
+      "check_race_track": true,
+      "drones": [
+        {
+          "id": 2,
+          "channel": 80,
+          "drone": "cf21B_500"
+        }
+      ],
+      "real_track_objects": true
+    },
+    "env": {
+      "control_mode": "attitude",
+      "disturbances": {
+        "action": {
+          "fn": "normal",
+          "scale": 0.001
+        },
+        "dynamics": {
+          "fn": "uniform",
+          "kwargs": {
+            "maxval": [
+              0.1,
+              0.1,
+              0.1
+            ],
+            "minval": [
+              -0.1,
+              -0.1,
+              -0.1
+            ]
+          }
+        }
+      },
+      "freq": 50,
+      "id": "DroneRacing-v0",
+      "randomizations": {
+        "drone_inertia": {
+          "fn": "uniform",
+          "kwargs": {
+            "maxval": [
+              1e-06,
+              1e-06,
+              1e-06
+            ],
+            "minval": [
+              -1e-06,
+              -1e-06,
+              -1e-06
+            ]
+          }
+        },
+        "drone_mass": {
+          "fn": "uniform",
+          "kwargs": {
+            "maxval": 0.005,
+            "minval": -0.005
+          }
+        },
+        "drone_pos": {
+          "fn": "uniform",
+          "kwargs": {
+            "maxval": [
+              0.1,
+              0.1,
+              0.02
+            ],
+            "minval": [
+              -0.1,
+              -0.1,
+              0.0
+            ]
+          }
+        },
+        "drone_rpy": {
+          "fn": "uniform",
+          "kwargs": {
+            "maxval": [
+              0.1,
+              0.1,
+              0.1
+            ],
+            "minval": [
+              -0.1,
+              -0.1,
+              -0.1
+            ]
+          }
+        },
+        "gate_pos": {
+          "fn": "uniform",
+          "kwargs": {
+            "maxval": [
+              0.15,
+              0.15,
+              0.1
+            ],
+            "minval": [
+              -0.15,
+              -0.15,
+              -0.1
+            ]
+          }
+        },
+        "gate_rpy": {
+          "fn": "uniform",
+          "kwargs": {
+            "maxval": [
+              0.05,
+              0.1,
+              0.2
+            ],
+            "minval": [
+              -0.05,
+              -0.1,
+              -0.2
+            ]
+          }
+        },
+        "obstacle_pos": {
+          "fn": "uniform",
+          "kwargs": {
+            "maxval": [
+              0.15,
+              0.15,
+              0.05
+            ],
+            "minval": [
+              -0.15,
+              -0.15,
+              -0.05
+            ]
+          }
+        }
+      },
+      "seed": -1,
+      "sensor_range": 0.7,
+      "track": {
+        "drones": [
+          {
+            "pos": [
+              0.5,
+              -1.0,
+              0.0
+            ],
+            "rpy": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "vel": [
+              0,
+              0,
+              0
+            ],
+            "ang_vel": [
+              0,
+              0,
+              0
+            ]
+          }
+        ],
+        "gate_order": [
+          3,
+          2,
+          -1,
+          -3,
+          -4,
+          1,
+          -2,
+          4,
+          3,
+          2,
+          -1,
+          -3,
+          -4,
+          1,
+          -2,
+          4,
+          3,
+          2,
+          -1,
+          -3
+        ],
+        "gates": [
+          {
+            "pos": [
+              2.0,
+              0.0,
+              0.67
+            ],
+            "rpy": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "pos": [
+              2.0,
+              0.0,
+              1.4
+            ],
+            "rpy": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          {
+            "pos": [
+              -1.0,
+              1.0,
+              0.67
+            ],
+            "rpy": [
+              0.0,
+              0.0,
+              0.8
+            ]
+          },
+          {
+            "pos": [
+              -1.0,
+              -1.0,
+              1.2
+            ],
+            "rpy": [
+              0.0,
+              0.0,
+              2.35
+            ]
+          }
+        ],
+        "obstacles": [
+          {
+            "pos": [
+              0.05,
+              1.3,
+              1.55
+            ]
+          },
+          {
+            "pos": [
+              -1.36,
+              -0.06,
+              1.55
+            ]
+          },
+          {
+            "pos": [
+              1.0,
+              0.45,
+              1.55
+            ]
+          },
+          {
+            "pos": [
+              0.0,
+              -1.41,
+              1.55
+            ]
+          }
+        ],
+        "randomize": false,
+        "safety_limits": {
+          "pos_limit_high": [
+            1.5,
+            1.75,
+            2.0
+          ],
+          "pos_limit_low": [
+            -2.5,
+            -1.75,
+            -0.001
+          ]
+        }
+      }
+    },
+    "sim": {
+      "attitude_freq": 500,
+      "cam_config": [
+        {
+          "distance": 5.0,
+          "azimuth": 180.0,
+          "elevation": -25.0,
+          "lookat": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      ],
+      "camera": -1,
+      "drone": "cf21B_500",
+      "dynamics": "first_principles",
+      "freq": 500,
+      "render": true
+    }
+  },
+  "config_file": {
+    "path": "/home/maadr_hannes/projects/lsy_drone_racing/config/level2.toml",
+    "sha256": "5e83d4da8f0cbe094bb343d4506ea15e85cb299ff4054b395c84a2152b78c12d"
+  },
+  "controller_file": {
+    "path": "/home/maadr_hannes/projects/lsy_drone_racing/lsy_drone_racing/control/rl_race_controller.py",
+    "sha256": "3678830de1eed56265e9f148f387bd1ea929a9b1b97338ee2c5cf0fb7b612e4f"
+  },
+  "code": {
+    "commit": "54bb1034b0e57880fb32f2e574766c3a39db5fb2",
+    "dirty": true
+  },
+  "argv": [
+    "scripts/deploy.py",
+    "--config",
+    "level2.toml",
+    "--record=True",
+    "--onboard_log=True"
+  ],
+  "onboard_log": true,
+  "notes": "Host snapshots without sensor timestamps; onboard data is separate.",
+  "format_version": 1,
+  "started_utc": "2026-11-24T14:17:50.576979+00:00",
+  "clock_anchor": {
+    "wall_time_ns": 1795529870576984155,
+    "monotonic_ns": 18531510597092
+  }
+}
