@@ -85,6 +85,8 @@ class Crazyflie:
         self._onboard_log: OnboardLog | None = None
         self._log_streams: list[Any] = []
         self._log_futures: list[Future[None]] = []
+        # Optional host recorder; never open another radio connection for logging.
+        self.record_event: Callable[..., None] | None = None
 
     @classmethod
     def from_radio(
@@ -443,6 +445,8 @@ class Crazyflie:
         pos = self._ros_connector.tf_pos[self.drone_name]
         quat = self._ros_connector.tf_quat[self.drone_name]
         await self.cf.localization().external_pose().send_external_pose(pos=pos, quat=quat)
+        if self.record_event is not None:
+            self.record_event("external_pose_sent", pos=pos, quat=quat)
 
     async def _update_estimators(self, stop_event: Event) -> None:
         """Continuously send the mocap pose to the Crazyflie estimator until stopped."""
@@ -464,6 +468,14 @@ class Crazyflie:
     ) -> None:
         await self._change_commander_level("low")
         await self.cf.commander().send_setpoint_rpyt(roll, pitch, yaw_rate, thrust)
+        if self.record_event is not None:
+            self.record_event(
+                "attitude_command_sent",
+                roll_deg=roll,
+                pitch_deg=pitch,
+                yaw_rate_deg_s=yaw_rate,
+                collective_pwm=thrust,
+            )
 
     async def _send_full_state_setpoint(
         self,
@@ -475,6 +487,10 @@ class Crazyflie:
     ) -> None:
         await self._change_commander_level("low")
         await self.cf.commander().send_setpoint_full_state(pos, vel, acc, quat, body_rates)
+        if self.record_event is not None:
+            self.record_event(
+                "state_command_sent", pos=pos, vel=vel, acc=acc, quat=quat, body_rates=body_rates
+            )
 
     async def _stop_setpoint(self) -> None:
         await self.cf.commander().send_stop_setpoint()
@@ -490,6 +506,8 @@ class Crazyflie:
         await self.cf.high_level_commander().go_to(
             pos[0], pos[1], pos[2], yaw, duration, False, linear, None
         )
+        if self.record_event is not None:
+            self.record_event("go_to_sent", pos=pos, yaw=yaw, duration=duration, linear=linear)
 
     async def _arm(self) -> None:
         await self.cf.platform().send_arming_request(do_arm=True)
@@ -497,6 +515,8 @@ class Crazyflie:
 
     async def _emergency_stop(self) -> None:
         await self.cf.localization().emergency().send_emergency_stop()
+        if self.record_event is not None:
+            self.record_event("emergency_stop_sent")
 
     async def _start_onboard_log(
         self, variables: list[str], params: list[str], strict: bool
