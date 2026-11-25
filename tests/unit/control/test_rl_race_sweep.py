@@ -44,9 +44,13 @@ def test_trial_forwards_config_and_publishes_final_files(
         output_root: str | None = None,
         roll_limit_deg: float | None = None,
         pitch_limit_deg: float | None = None,
+        pretrain_eval_every_steps: int | None = None,
+        race_eval_every_steps: int | None = None,
     ) -> str:
         calls.update(seed=seed, policy_layers=policy_layers, run_name=run_name)
         assert roll_limit_deg == pitch_limit_deg == 75
+        assert pretrain_eval_every_steps == 80_000_000
+        assert race_eval_every_steps == (1_600_000_000 if grouped else 800_000_000)
         assert output_root.endswith("sweeps/standalone/runs")
         return str(tmp_path)
 
@@ -57,6 +61,8 @@ def test_trial_forwards_config_and_publishes_final_files(
             "policy_layers": [32, 32],
             "cloud_checkpoint_budget_gb": budget,
             "tilt_limit_deg": 75,
+            "pretrain_eval_every_steps": 80_000_000,
+            "race_eval_every_steps": 800_000_000,
         },
         id="offline-test",
         log=lambda x: logs.append(x),
@@ -68,6 +74,7 @@ def test_trial_forwards_config_and_publishes_final_files(
         run.config["experiment"] = {
             "name": "tilt75",
             "tilt_limit_deg": run.config.pop("tilt_limit_deg"),
+            "race_eval_every_steps": 1_600_000_000,
         }
     monkeypatch.setattr(training, "train", train)
     monkeypatch.setattr(sweep.wandb, "init", lambda **kwargs: run)

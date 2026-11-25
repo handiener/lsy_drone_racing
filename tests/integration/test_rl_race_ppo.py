@@ -100,3 +100,34 @@ def test_hook_rejects_adaptive_kl():
             optimizer_override=separate_lr(1e-4, 1e-4),
             learning_rate_schedule="ADAPTIVE_KL",
         )
+
+
+@pytest.mark.integration
+def test_sparse_evaluation_preserves_training_and_checkpoints():
+    """Observation-only spacing changes eval calls while leaving learned arrays identical."""
+    baseline = None
+    for spacing, expected in (
+        (None, [0, 10240, 20480, 30720, 40960]),
+        (15000, [0, 20480, 40960]),
+        (70000, [0, 40960]),
+    ):
+        evaluations, checkpoints = [], []
+
+        def progress(step: int, metrics: dict) -> None:
+            if "eval/episode_reward" in metrics:
+                evaluations.append(step)
+
+        _, params, _ = _train(
+            vendored,
+            num_evals=5,
+            num_eval_envs=8,
+            eval_every_steps=spacing,
+            progress_fn=progress,
+            policy_params_fn=lambda step, *_: checkpoints.append(step),
+        )
+        assert evaluations == expected
+        assert checkpoints == [0, 10240, 20480, 30720, 40960]
+        if baseline is None:
+            baseline = params
+        else:
+            _assert_trees_equal(params, baseline)

@@ -25,7 +25,8 @@ All other options use the defaults below. Override any option with `--name=value
 ```bash
 pixi run -e gpu python -m lsy_drone_racing.control.rl_race.train \
   --run_name=race_custom --seed=2 --race_steps=10000000000 \
-  --policy_layers='(256,256,256)' --anneal_steps=400000000
+  --policy_layers='(256,256,256)' --anneal_steps=400000000 \
+  --pretrain_eval_every_steps=80000000 --race_eval_every_steps=1600000000
 ```
 
 Pretrain stops early when success reaches the switching threshold; if the threshold is not
@@ -35,16 +36,14 @@ matching network/environment settings and
 This restores weights/normalization; Adam and rollout state start fresh.
 
 Pretrain **always evaluates** because evaluation success determines when to switch to race.
-Intermediate evaluation during race/anneal is **off by default**
-(`--intermediate_eval=False`). Enable it with `--intermediate_eval=True`;
-`--eval_every_steps` controls evaluation spacing. The bundled sweep YAMLs explicitly enable
-evaluation in every stage.
+Intermediate evaluation during race/anneal is **on by default**.
+Disable it with `--intermediate_eval=False`;
+`--pretrain_eval_every_steps` and `--race_eval_every_steps` independently control spacing.
+By default, pretrain uses `--eval_every_steps` (80M); race/anneal uses 20 times the
+pretrain interval (1.6B). Setting `--race_eval_every_steps` overrides that ratio.
+Intervals count environment transitions and round up to training boundaries; lower
+`--eval_every_steps` if finer race spacing is needed.
 Final evaluation after race/anneal still runs regardless of this flag.
-
-The long-track recipe defaults to `race_time=0.05` per control step, or 2.5 reward
-units per second at 50 Hz. This reduces the previous `0.3` penalty sixfold so
-longer successful flights are not overwhelmed by time costs. Explicit CLI or
-sweep values override this default; historical sweep YAMLs retain their values.
 
 <details>
 <summary><strong>Training arguments: meaning and actual defaults</strong></summary>
@@ -105,8 +104,10 @@ Boolean/list examples: `--continue_race=True`, `--policy_layers='(256,256)'`.
 | `--policy_layers` | `(256, 256, 256)` | Actor hidden-layer widths. |
 | `--value_layers` | `(256, 256, 256, 256)` | Critic hidden-layer widths. |
 | `--activation` | `swish` | swish, elu, relu or tanh. |
-| `--intermediate_eval` | `False` | Run periodic evaluation during race/anneal; pretrain always evaluates for stage switching. |
-| `--eval_every_steps` | `80000000` | Requested transition spacing for intermediate evaluation. |
+| `--intermediate_eval` | `True` | Run periodic evaluation during race/anneal; pretrain always evaluates for stage switching. |
+| `--eval_every_steps` | `80000000` | Common evaluation interval; also controls race/anneal training and checkpoint spacing. |
+| `--pretrain_eval_every_steps` | `None` | Pretrain evaluation interval; None uses eval_every_steps. |
+| `--race_eval_every_steps` | `None` | Race/anneal evaluation interval with intermediate_eval=True; None uses 20 × the pretrain interval. Does not change the training budget. |
 | `--num_eval_envs` | `512` | Intermediate evaluation worlds. |
 | `--final_eval_episodes` | `1024` | Final official-start episodes PER evaluation seed. |
 | `--final_eval_seeds` | `(100000, 200000, 300000)` | Seeds for final evaluation, independent of the training seed. |
@@ -162,8 +163,20 @@ Without arguments, `sweep.py` executes one agent-assigned trial; users normally 
 
 | File | Trials | Parameters varied |
 | --- | ---: | --- |
-| [sweeps/L2_sweep.yaml](sweeps/L2_sweep.yaml) | 25 | 16 attitude pairs, original-PPO control, gates, anneal, budgets and a seed repeat |
+| [sweeps/newtrack_2day.yaml](sweeps/newtrack_2day.yaml) | 48 | 24 recipes × seeds 1/2: attitude, budget, anneal, gates, discount/GAE, rewards, actor learning rate, entropy and starts |
+| [sweeps/L2_sweep.yaml](sweeps/L2_sweep.yaml) | 25 | 16 attitude pairs, smalltrial sampling reference, gates, anneal, budgets and a seed repeat |
 | [sweeps/example.yaml](sweeps/example.yaml) | 2 | seed: 1 / 2; race_steps fixed at 12B |
+
+`newtrack_2day.yaml` targets about seven GPUs for two days. All trials use 16384 worlds,
+batch4096, 32 minibatches, unroll32 and four update epochs. Race runs 3000 PPO iterations;
+budget variants use 3500, and anneal variants add 400. Evaluation is enabled at about 84M
+pretrain / 1.68B race transitions. Final evaluation uses three seeds × 1024 episodes;
+`final/balanced_score` ranks completion rates ≥80% by lap time. Compare both training seeds
+for each recipe. To use it, replace the `--create` path above with this YAML.
+
+`L2_sweep.yaml` and `example.yaml` use `config/level2.toml` (the new 20-pass track),
+25-second episodes and `race_time=0.05`. Intermediate evaluation is enabled: about every 80M transitions during
+pretrain and 1.6B during race/anneal (20× pretrain). Edit the YAML to override these intervals.
 
 `L2_sweep.yaml` lists 25 explicit experiments under `parameters.experiment.values`.
 Each entry merges the `&baseline` settings with its overrides via standard YAML `<<`.
@@ -171,9 +184,8 @@ W&B grid runs each complete entry once; it does not multiply every field into a 
 Roll/pitch are tied at 70/75/80/85 degrees; yaw independently takes all four values (16 pairs).
 Additional entries compare n_gates=3, anneal=1.6B transitions (400 PPO iterations),
 2,500/3,500 race iterations, and seed2 against the 3,000-iteration seed1 baseline.
-The original-PPO control uses 8192 worlds/batch1024/race2.5B/eval20M/pretrain500M;
-it retains the current four-action interface, so it is not an exact copy of the teammate's
-old three-action policy. Fixed architecture, learning rates and rewards match the baseline.
+The `smalltrial_80_70` reference uses 8192 worlds, batch1024, 80/80/70-degree action limits
+and 2400 race PPO iterations. Architecture, learning rates and rewards match the baseline.
 The first YAML entry is the moderate baseline; cloud scheduling order is not guaranteed.
 Two GPUs may finish only part of the25 experiments in10 hours; continue the same sweep ID later.
 Training options go inside YAML `parameters`; omitted options inherit `train.py` defaults.

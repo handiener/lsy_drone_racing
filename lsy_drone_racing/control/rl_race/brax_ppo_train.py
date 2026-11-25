@@ -245,6 +245,7 @@ def train(
     restore_value_fn: bool = True,
     run_evals: bool = True,
     optimizer_override: Optional[optax.GradientTransformation] = None,  # rl_race: hook
+    eval_every_steps: Optional[int] = None,  # rl_race: observation-only spacing
 ):
   """PPO training.
 
@@ -339,6 +340,9 @@ def train(
     optimizer_override: rl_race: if given, replaces the optimizer built from
       learning_rate and max_grad_norm (incl. gradient clipping). Not supported
       with the adaptive-KL learning-rate schedule.
+    eval_every_steps: rl_race: minimum spacing between evaluation rollouts, checked
+      at host epoch boundaries. Initial/final evaluations are kept. Does not change
+      the training epochs, update count, or checkpoint callbacks.
     use_pmap_on_reset: default to True. if True, use pmap instead of vmap for
       env.reset across devices.
 
@@ -346,6 +350,8 @@ def train(
     Tuple of (make_policy function, network params, metrics)
   """
   assert batch_size * num_minibatches % num_envs == 0
+  if eval_every_steps is not None and eval_every_steps <= 0:
+    raise ValueError("eval_every_steps must be positive or None")
 
   if vision and action_repeat != 1:
     raise ValueError(
@@ -801,6 +807,7 @@ def train(
   training_metrics = {}
   training_walltime = 0
   current_step = 0
+  last_eval_step = 0
 
   # Run initial eval
   metrics = {}
@@ -868,11 +875,16 @@ def train(
 
     if num_evals > 0:
       metrics = training_metrics
-      if run_evals:
+      if run_evals and (
+          eval_every_steps is None
+          or current_step - last_eval_step >= eval_every_steps
+          or it == num_evals_after_init - 1
+      ):
         metrics = evaluator.run_evaluation(
             params,
             training_metrics,
         )
+        last_eval_step = current_step
       logging.info(metrics)
       progress_fn(current_step, metrics)
 

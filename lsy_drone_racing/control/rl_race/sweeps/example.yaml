@@ -1,5 +1,5 @@
-# Conservative fixed recipe; race budget counts include Brax rounding.
-name: conservative-seed-check
+# New 20-pass track, 25-second episodes; race budget includes Brax rounding.
+name: newtrack-conservative-seed-check
 program: lsy_drone_racing/control/rl_race/sweep.py
 method: grid
 run_cap: 2
@@ -22,6 +22,10 @@ parameters:
     - 2
   start_stage:
     value: pretrain
+  max_episode_steps:
+    value: 1250
+  switch_success:
+    value: 0.3
   intermediate_eval:
     value: true
   start_params:
@@ -74,13 +78,17 @@ parameters:
   race_lap:
     value: 10
   race_time:
-    value: 0.3
+    value: 0.05
   race_crash:
     value: 20
   anneal_steps:
     value: 0
   eval_every_steps:
     value: 80000000
+  pretrain_eval_every_steps:
+    value: 80000000
+  race_eval_every_steps:
+    value: null # Default: 20 x pretrain interval.
   final_eval_episodes:
     value: 1024
   final_eval_seeds:

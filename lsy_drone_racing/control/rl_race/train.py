@@ -167,8 +167,10 @@ def train(
     value_layers: tuple[int, ...] = (256, 256, 256, 256),
     activation: str = "swish",
     # Evaluation and logging.
-    intermediate_eval: bool = False,
+    intermediate_eval: bool = True,
     eval_every_steps: int = 80_000_000,
+    pretrain_eval_every_steps: int | None = None,
+    race_eval_every_steps: int | None = None,
     num_eval_envs: int = 512,
     final_eval_episodes: int = 1024,
     final_eval_seeds: tuple[int, ...] = (100000, 200000, 300000),
@@ -180,6 +182,10 @@ def train(
     """Run the staged training and return the run directory."""
     if eval_every_steps <= 0:
         raise ValueError("eval_every_steps must be positive")
+    if pretrain_eval_every_steps is not None and pretrain_eval_every_steps <= 0:
+        raise ValueError("pretrain_eval_every_steps must be positive or None")
+    if race_eval_every_steps is not None and race_eval_every_steps <= 0:
+        raise ValueError("race_eval_every_steps must be positive or None")
     if final_eval_episodes < 1 or final_eval_batch_size < 1 or not final_eval_seeds:
         raise ValueError("Final evaluation needs positive episodes, batch size and seeds")
     if start_stage not in {"pretrain", "race", "anneal"}:
@@ -336,8 +342,16 @@ def train(
                 kwargs["restore_params"] = params
             updates = iteration_updates(num_updates_per_batch, num_minibatches)
             transitions = batch_size * num_minibatches * unroll_length
-            # Brax rounds each evaluation interval to complete sampling/update iterations.
-            eval_intervals = max(steps // eval_every_steps, 1)
+            # Pretrain checks determine reward switching. Race/anneal keep the existing host
+            # chunks and budget rounding; their eval spacing only skips observation rollouts.
+            pretrain_interval = pretrain_eval_every_steps or eval_every_steps
+            chunk_interval = pretrain_interval if stage == "pretrain" else eval_every_steps
+            observation_interval = (
+                pretrain_interval
+                if stage == "pretrain"
+                else race_eval_every_steps or 20 * pretrain_interval
+            )
+            eval_intervals = max(steps // chunk_interval, 1)
             iterations_per_eval = -(-steps // (eval_intervals * transitions))
             decay = eval_intervals * iterations_per_eval * updates
             lr_args: dict[str, Any] | None = None
@@ -400,6 +414,7 @@ def train(
                     deterministic_eval=True,
                     # Pretrain needs success measurements to switch to the race reward.
                     run_evals=stage == "pretrain" or intermediate_eval,
+                    eval_every_steps=observation_interval,
                     log_training_metrics=True,
                     seed=seed,
                     progress_fn=progress,

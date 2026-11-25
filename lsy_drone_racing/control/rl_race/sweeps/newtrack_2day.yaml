@@ -1,0 +1,165 @@
+# 24 explicit recipes x 2 training seeds = 48 runs for about 7 GPUs / 2 days.
+# Fixed sampling scale: 16384 worlds, batch4096, 32 minibatches, unroll32, 4 epochs.
+# One PPO iteration = 4,194,304 transitions and 128 optimizer updates.
+# Race: 3000 iterations, or 3500 in budget variants; anneal adds 400 iterations.
+name: newtrack_2day_48
+program: lsy_drone_racing/control/rl_race/sweep.py
+method: grid
+run_cap: 48
+metric:
+  name: final/balanced_score
+  goal: minimize
+command:
+  - ${env}
+  - pixi
+  - run
+  - -e
+  - gpu
+  - python
+  - -m
+  - lsy_drone_racing.control.rl_race.sweep
+parameters:
+  seed:
+    values: [1, 2]
+  experiment:
+    values:
+      # Baseline and the most relevant attitude ranges from the old-track sweep.
+      - &baseline
+        name: baseline_80_70
+        tilt_limit_deg: 80
+        yaw_limit_deg: 70
+        race_steps: 12582912000 # 3000 PPO iterations.
+        anneal_steps: 0
+      - <<: *baseline
+        name: tilt70_yaw70
+        tilt_limit_deg: 70
+      - <<: *baseline
+        name: tilt75_yaw70
+        tilt_limit_deg: 75
+      - <<: *baseline
+        name: tilt75_yaw80
+        tilt_limit_deg: 75
+        yaw_limit_deg: 80
+      - <<: *baseline
+        name: tilt80_yaw80
+        yaw_limit_deg: 80
+      - <<: *baseline
+        name: tilt85_yaw70
+        tilt_limit_deg: 85
+
+      # Extra updates, gentle late refinement, and one three-gate observation case.
+      - <<: *baseline
+        name: budget3500_80_70
+        race_steps: 14680064000
+      - <<: *baseline
+        name: budget3500_70_70
+        tilt_limit_deg: 70
+        race_steps: 14680064000
+      - <<: *baseline
+        name: anneal400_80_70
+        anneal_steps: 1677721600
+      - <<: *baseline
+        name: anneal400_70_70
+        tilt_limit_deg: 70
+        anneal_steps: 1677721600
+      - <<: *baseline
+        name: gates3_80_70
+        n_gates: 3
+
+      # Longer return/advantage horizons for the 20-pass track.
+      - <<: *baseline
+        name: gamma995
+        discounting: 0.995
+      - <<: *baseline
+        name: gamma9975
+        discounting: 0.9975
+      - <<: *baseline
+        name: gae98
+        gae_lambda: 0.98
+      - <<: *baseline
+        name: gamma995_gae98
+        discounting: 0.995
+        gae_lambda: 0.98
+
+      # Local reward changes around the successful smalltrial recipe.
+      - <<: *baseline
+        name: race_time025
+        race_time: 0.025
+      - <<: *baseline
+        name: race_time075
+        race_time: 0.075
+      - <<: *baseline
+        name: race_crash30
+        race_crash: 30
+      - <<: *baseline
+        name: race_lap30
+        race_lap: 30
+
+      # Local PPO changes, more full-course starts, and one combined candidate.
+      - <<: *baseline
+        name: actor_lr5e5
+        policy_lr_after_switch: 0.00005
+      - <<: *baseline
+        name: actor_lr2e4
+        policy_lr_after_switch: 0.0002
+      - <<: *baseline
+        name: entropy002
+        entropy_cost: 0.002
+      - <<: *baseline
+        name: official_starts075
+        official_start_prob: 0.75
+      - <<: *baseline
+        name: stable_longhorizon
+        discounting: 0.995
+        gae_lambda: 0.98
+        policy_lr_after_switch: 0.00005
+
+  # Every trial starts from scratch on the current config/level2.toml.
+  start_stage: {value: pretrain}
+  start_params: {value: null}
+  max_episode_steps: {value: 1250}
+  switch_success: {value: 0.3}
+  pretrain_max_steps: {value: 2013265920}
+  num_envs: {value: 16384}
+  batch_size: {value: 4096}
+  num_minibatches: {value: 32}
+  unroll_length: {value: 32}
+  num_updates_per_batch: {value: 4}
+  policy_layers: {value: [256, 256, 256]}
+  value_layers: {value: [256, 256, 256, 256]}
+  activation: {value: swish}
+  n_gates: {value: 2}
+  official_start_prob: {value: 0.5}
+  thrust_min_fraction: {value: 0.0}
+  thrust_max_fraction: {value: 1.0}
+  learning_rate: {value: 0.0003}
+  policy_lr_after_switch: {value: 0.0001}
+  entropy_cost: {value: 0.005}
+  noise_scale: {value: 1.0}
+  discounting: {value: 0.99}
+  gae_lambda: {value: 0.95}
+  clipping_epsilon: {value: 0.2}
+  max_grad_norm: {value: 1.0}
+  critic_only_iterations: {value: 10}
+  lr_decay_to: {value: 1.0}
+  pretrain_time: {value: 0.2}
+  pretrain_crash: {value: 20}
+  race_gate: {value: 5}
+  race_lap: {value: 10}
+  race_time: {value: 0.05}
+  race_crash: {value: 20}
+  anneal_to: {value: 0.1}
+
+  # 20 PPO iterations per training chunk; pretrain checks every chunk.
+  # Default race/anneal evaluation interval is 20 x the pretrain interval.
+  intermediate_eval: {value: true}
+  eval_every_steps: {value: 83886080}
+  pretrain_eval_every_steps: {value: 83886080}
+  race_eval_every_steps: {value: null}
+  num_eval_envs: {value: 512}
+  final_eval_episodes: {value: 1024}
+  final_eval_seeds: {value: [510000, 520000, 530000]}
+  final_eval_batch_size: {value: 256}
+  upload_checkpoint: {value: true}
+  sweep_trial_count: {value: 48}
+  cloud_checkpoint_budget_gb: {value: 50}
