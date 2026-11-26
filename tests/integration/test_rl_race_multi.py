@@ -4,7 +4,9 @@ Thresholds are zero solely to exercise stage transitions, not demonstrate skill.
 """
 
 import json
+from dataclasses import asdict, replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import jax
 import jax.numpy as jnp
@@ -13,13 +15,18 @@ import pytest
 
 from lsy_drone_racing.control.rl_race_multi import checkpoint
 from lsy_drone_racing.control.rl_race_multi.controller import network_from_metadata
-from lsy_drone_racing.control.rl_race_multi.env_wrapper.multi import MultiRaceEnv
+from lsy_drone_racing.control.rl_race_multi.env_wrapper.env import EnvConfig
+from lsy_drone_racing.control.rl_race_multi.env_wrapper.multi import (
+    MIN_START_DISTANCE_M,
+    MultiRaceEnv,
+)
 from lsy_drone_racing.control.rl_race_multi.env_wrapper.observations import ObsConfig, encode
 from lsy_drone_racing.control.rl_race_multi.evaluation import config_from_record
 from lsy_drone_racing.control.rl_race_multi.export import export
 from lsy_drone_racing.control.rl_race_multi.league import League
 from lsy_drone_racing.control.rl_race_multi.network import zeros
 from lsy_drone_racing.control.rl_race_multi.train import RL_DIR, train
+from lsy_drone_racing.envs.race_core import build_action_space
 from lsy_drone_racing.utils import load_config, load_controller
 
 
@@ -28,6 +35,59 @@ def trained(tmp_path_factory):
     root = tmp_path_factory.mktemp("recurrent_e2e")
     run = train(config_file=str(RL_DIR / "configs/smoke.yaml"), output_root=str(root), device="cpu")
     return Path(run)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("swap_starts", [False, True])
+def test_random_start_pairs_stay_in_shared_zone_and_preserve_active_worlds(
+    swap_starts: bool,
+) -> None:
+    cfg = EnvConfig()
+    space = build_action_space("attitude", "cf21B_500", "first_principles")
+    action = replace(cfg.action, thrust_min=float(space.low[3]), thrust_max=float(space.high[3]))
+    pool = SimpleNamespace(action=asdict(action))
+    env = MultiRaceEnv(16, cfg, pool, None, device="cpu", swap_starts=swap_starts)
+    try:
+        reset = jax.jit(env._reset_worlds)
+        contacts = jax.jit(env._core.build_contact_check_fn())
+        initial = env._template
+        mask = jnp.ones(16, bool)
+        data = reset(initial, mask, jax.random.key(0))
+        repeated = reset(initial, mask, jax.random.key(0))
+        np.testing.assert_array_equal(data.sim_data.states.pos, repeated.sim_data.states.pos)
+        samples = []
+        for i in range(8):
+            data = reset(data, mask, jax.random.key(i + 1))
+            pos = np.asarray(data.sim_data.states.pos)
+            assert (pos >= np.array([0.37, -1.13, 0]) - 1e-6).all()
+            assert (pos <= np.array([0.63, -0.87, 0.02]) + 1e-6).all()
+            distance = np.linalg.norm(pos[:, 0, :2] - pos[:, 1, :2], axis=-1)
+            assert (distance >= MIN_START_DISTANCE_M - 1e-6).all()
+            assert not np.asarray(contacts(data)).any()
+            np.testing.assert_allclose(pos, data.takeoff_pos)
+            np.testing.assert_allclose(pos, data.last_drone_pos)
+            samples.append(pos)
+        samples = np.concatenate(samples)
+        # Each agent reaches both sides of both axes, including the added outer strip.
+        for agent in range(2):
+            assert samples[:, agent, 0].min() < 0.39
+            assert samples[:, agent, 0].max() > 0.61
+            assert samples[:, agent, 1].min() < -1.11
+            assert samples[:, agent, 1].max() > -0.89
+        mask = jnp.arange(16) % 2 == 0
+        # Even an invalid pair in an active world must not be relocated by another world's reset.
+        pos = data.sim_data.states.pos.at[1, 1].set(data.sim_data.states.pos[1, 0])
+        data = data.replace(
+            sim_data=data.sim_data.replace(states=data.sim_data.states.replace(pos=pos))
+        )
+        after = reset(data, mask, jax.random.key(100))
+        for name in ("pos", "vel", "quat", "ang_vel"):
+            np.testing.assert_array_equal(
+                np.asarray(getattr(after.sim_data.states, name))[~np.asarray(mask)],
+                np.asarray(getattr(data.sim_data.states, name))[~np.asarray(mask)],
+            )
+    finally:
+        env.close()
 
 
 @pytest.mark.integration

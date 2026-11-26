@@ -27,6 +27,7 @@ from .env import METRICS, EnvConfig, RaceEnv
 from .observations import encode
 
 DEFAULT_CONFIG = Path(__file__).resolve().parents[4] / "config/multi_new_level2.toml"
+MIN_START_DISTANCE_M = 0.22  # Horizontal center separation; cf21B box diagonal is about 0.20 m.
 MULTI_METRICS = (
     "win",
     "loss",
@@ -152,6 +153,28 @@ class MultiRaceEnv(RaceEnv):
 
     def _reset_worlds(self, data: Any, mask: Any, key: Any) -> Any:
         data, _ = self._core._reset(data, None, mask)
+        states = data.sim_data.states
+
+        def too_close(pos: Any) -> Any:
+            distance_sq = jnp.sum((pos[:, 0, :2] - pos[:, 1, :2]) ** 2, axis=-1)
+            return mask & (distance_sq < MIN_START_DISTANCE_M**2)
+
+        def resample(carry: tuple) -> tuple:
+            pos, rng = carry
+            rng, sample_key = jax.random.split(rng)
+            proposed = self._core.sim.default_data.states.pos + self._core.settings.randomizations[
+                "drone_pos"
+            ](sample_key, shape=pos.shape)
+            return jnp.where(too_close(pos)[:, None, None], proposed, pos), rng
+
+        pos, key = jax.lax.while_loop(
+            lambda carry: jnp.any(too_close(carry[0])), resample, (states.pos, key)
+        )
+        data = data.replace(
+            sim_data=data.sim_data.replace(
+                states=states.replace(pos=pos), core=data.sim_data.core.replace(mjx_synced=False)
+            )
+        )
         if self.swap_starts:
             swap = mask & jax.random.bernoulli(key, 0.5, (self.n_envs,))
             states = data.sim_data.states
@@ -167,8 +190,7 @@ class MultiRaceEnv(RaceEnv):
                 ),
                 takeoff_pos=takeoff,
             )
-            data = race_core._reset_env_data(data, mask)
-        return data
+        return race_core._reset_env_data(data, mask)
 
     def _features(self, data: Any, previous: Any, solo_opponent: Any) -> tuple:
         raw = race_core.obs(data)
