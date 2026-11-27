@@ -45,6 +45,8 @@ the existing bounds and collision checks in the current scene.
 The bundled dynamic route is the simplified model's estimate (0.8 N, 80-degree tilt,
 8 rad/s thrust-direction rate), which has known simulator geometry contacts. Like the original
 Hermite curve, it is a soft guide, not a collision-free trajectory or an optimality certificate.
+The offline [reference generator](env_wrapper/reference_generator/README.md) reproduces the
+bundled JSON using the original 80-degree settings.
 
 Pretrain **always evaluates** because evaluation success determines when to switch to race.
 Intermediate evaluation during race/anneal is **on by default**.
