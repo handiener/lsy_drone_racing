@@ -58,6 +58,7 @@ class EnvConfig:
     obs: ObsConfig = field(default_factory=ObsConfig)
     reward: rewards.RewardConfig = field(default_factory=rewards.RewardConfig)
     start: StartConfig = field(default_factory=StartConfig)
+    reference_path: str = "hermite"
 
 
 class RaceEnv(Env):
@@ -76,6 +77,8 @@ class RaceEnv(Env):
         from lsy_drone_racing.utils import load_config
 
         self.cfg = cfg or EnvConfig()
+        if self.cfg.reference_path not in {"hermite", "dynamic"}:
+            raise ValueError("reference_path must be hermite or dynamic")
         self.n_envs = int(n_envs)
         self.config_path = Path(config_path or DEFAULT_CONFIG).expanduser().resolve()
         config = load_config(self.config_path)
@@ -109,8 +112,13 @@ class RaceEnv(Env):
             thrust_max=float(low[3] + (high[3] - low[3]) * action_cfg.thrust_max_fraction),
         )
         self.start_pos = jnp.asarray(np.asarray(config.env.track.drones[0]["pos"], np.float32))
+        self._reference_polyline = (
+            path.build_dynamic_polyline(config.env.track)
+            if self.cfg.reference_path == "dynamic"
+            else None
+        )
         self._path_start = build_path_start(
-            self.cfg.start, core.build_contact_check_fn(), self.start_pos
+            self.cfg.start, core.build_contact_check_fn(), self.start_pos, self._reference_polyline
         )
         self.n_seq = int(core.data.gate_sequence.shape[0])
 
@@ -192,6 +200,7 @@ class RaceEnv(Env):
             prev["pos"],
             raw["pos"],
             lateral_weight=self.cfg.reward.path_lateral,
+            polyline_fn=self._reference_polyline,
         )
         official = state.info["official"]
         seconds = data.steps.astype(jnp.float32) / self.freq

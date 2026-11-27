@@ -14,8 +14,13 @@ from lsy_drone_racing.control.rl_race import train as training
 
 @pytest.mark.parametrize("intermediate_eval", [False, True])
 @pytest.mark.parametrize("stage_intervals", ["defaults", "pretrain_only", "explicit"])
+@pytest.mark.parametrize("reference_path", ["hermite", "dynamic"])
 def test_stage_evaluation_and_reward_switch(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, intermediate_eval: bool, stage_intervals: str
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    intermediate_eval: bool,
+    stage_intervals: str,
+    reference_path: str,
 ):
     """Pretrain can switch with the flag off; race/anneal obey it, final eval still runs."""
     calls = []
@@ -56,6 +61,7 @@ def test_stage_evaluation_and_reward_switch(
         pretrain_eval_every_steps=20_000_000 if stage_intervals != "defaults" else None,
         race_eval_every_steps=800_000_000 if stage_intervals == "explicit" else None,
         anneal_steps=1_600_000_000,
+        reference_path=reference_path,
     )
     assert calls == [True, intermediate_eval, intermediate_eval]
     # Race/anneal retain exactly the old training chunks and budget rounding. Only their
@@ -72,6 +78,9 @@ def test_stage_evaluation_and_reward_switch(
     assert len(final_calls) == 1
     assert final_calls[0]["stage"] == "anneal"
     assert run == str(tmp_path / "stage_eval")
+    for stage in ("pretrain", "race", "anneal"):
+        config = json.loads((Path(run) / f"{stage}_config.json").read_text())
+        assert config["env"]["reference_path"] == reference_path
 
 
 @pytest.mark.parametrize("name", ["pretrain_eval_every_steps", "race_eval_every_steps"])

@@ -51,6 +51,7 @@ def evaluate(
         obs=ObsConfig(**c["obs"]),
         reward=RewardConfig(**c["reward"]),
         start=StartConfig(official_prob=1.0),
+        reference_path=c.get("reference_path", "hermite"),
     )
     arrays = jax.tree.map(
         jnp.asarray,

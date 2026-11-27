@@ -40,7 +40,10 @@ class StartConfig:
 
 
 def build_path_start(
-    cfg: StartConfig, contact_check: Callable[[Any], Array], start_pos: Array
+    cfg: StartConfig,
+    contact_check: Callable[[Any], Array],
+    start_pos: Array,
+    polyline_fn: Callable | None = None,
 ) -> Callable[[Any, Array, Array], tuple[Any, Array]]:
     """Compile ``path_start(data, mask, key) -> (data, accepted)``.
 
@@ -57,7 +60,7 @@ def build_path_start(
         k_leg, k_s, k_pos, k_speed, k_dir = jax.random.split(key, 5)
         leg = jax.random.randint(k_leg, (count,), 0, n_seq)
         s = jax.random.uniform(k_s, (count,), minval=cfg.s_min, maxval=cfg.s_max)
-        controls = path.leg_control_points(
+        args = (
             data.gates_pos,
             data.gates_quat,
             data.gate_sequence,
@@ -65,7 +68,11 @@ def build_path_start(
             leg,
             start_pos,
         )
-        point, tangent = path.hermite(*controls, s)
+        if polyline_fn is None:
+            point, tangent = path.hermite(*path.leg_control_points(*args), s)
+        else:
+            points, _ = polyline_fn(*args)
+            point, tangent = path.sample_polyline(points, s)
         position = point + jax.random.uniform(
             k_pos, (count, 3), minval=-cfg.pos_noise_m, maxval=cfg.pos_noise_m
         )

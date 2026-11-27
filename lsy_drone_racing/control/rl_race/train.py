@@ -60,6 +60,7 @@ def env_config(
     n_gates: int = 2,
     thrust_min_fraction: float = 0.0,
     thrust_max_fraction: float = 1.0,
+    reference_path: str = "hermite",
 ) -> EnvConfig:
     """Environment configuration of a stage (``pretrain`` or ``race``).
 
@@ -82,6 +83,7 @@ def env_config(
         obs=ObsConfig(n_gates=n_gates),
         reward=reward,
         start=StartConfig(official_prob=official_prob),
+        reference_path=reference_path,
     )
 
 
@@ -125,6 +127,7 @@ def train(
     n_gates: int = 2,
     official_start_prob: float = 0.5,
     max_episode_steps: int = 1250,
+    reference_path: str = "hermite",
     # Schedule.
     pretrain_max_steps: int = 2_000_000_000,
     pretrain_crash: float | None = 20.0,
@@ -182,6 +185,8 @@ def train(
     """Run the staged training and return the run directory."""
     if eval_every_steps <= 0:
         raise ValueError("eval_every_steps must be positive")
+    if reference_path not in {"hermite", "dynamic"}:
+        raise ValueError("reference_path must be hermite or dynamic")
     if pretrain_eval_every_steps is not None and pretrain_eval_every_steps <= 0:
         raise ValueError("pretrain_eval_every_steps must be positive or None")
     if race_eval_every_steps is not None and race_eval_every_steps <= 0:
@@ -265,6 +270,7 @@ def train(
                 n_gates,
                 thrust_min_fraction,
                 thrust_max_fraction,
+                reference_path,
             )
             eval_cfg = env_config(
                 stage,
@@ -278,6 +284,7 @@ def train(
                 n_gates,
                 thrust_min_fraction,
                 thrust_max_fraction,
+                reference_path,
             )
             env = RaceEnv(num_envs, cfg, device=device, seed=seed)
             eval_env = RaceEnv(num_eval_envs, eval_cfg, device=device, seed=seed + 10_000)

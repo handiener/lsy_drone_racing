@@ -35,6 +35,17 @@ matching network/environment settings and
 `--start_stage=race --continue_race=True --start_params=PATH/race_final.pkl`.
 This restores weights/normalization; Adam and rollout state start fresh.
 
+`--reference_path=hermite` keeps the original cubic reference (default).
+`--reference_path=dynamic` loads the bundled offline dynamic-model reference. The choice controls
+pretrain path-progress shaping and path-based training starts in all stages; official-start
+evaluation and the race reward are unchanged. The dynamic guide adapts to randomized gate poses.
+Training loads a 33-point polyline per leg; it never runs a trajectory optimizer during rollouts.
+The guide is not replanned for every randomized obstacle. Path-start proposals still undergo
+the existing bounds and collision checks in the current scene.
+The bundled dynamic route is the simplified model's estimate (0.8 N, 80-degree tilt,
+8 rad/s thrust-direction rate), which has known simulator geometry contacts. Like the original
+Hermite curve, it is a soft guide, not a collision-free trajectory or an optimality certificate.
+
 Pretrain **always evaluates** because evaluation success determines when to switch to race.
 Intermediate evaluation during race/anneal is **on by default**.
 Disable it with `--intermediate_eval=False`;
@@ -65,6 +76,7 @@ Boolean/list examples: `--continue_race=True`, `--policy_layers='(256,256)'`.
 | `--n_gates` | `2` | Upcoming gates encoded in the observation: 2 gives 49D; 3 gives 56D. |
 | `--official_start_prob` | `0.5` | Official-start probability; remaining starts are sampled along the path. |
 | `--max_episode_steps` | `1250` | Maximum control steps per episode: 25 seconds at 50 Hz. |
+| `--reference_path` | `hermite` | `hermite` or the bundled offline `dynamic` guide. |
 | `--pretrain_max_steps` | `2000000000` | Maximum pretrain environment transitions; may switch earlier. |
 | `--pretrain_crash` | `20.0` | Pretrain crash penalty. |
 | `--pretrain_time` | `0.2` | Pretrain time penalty per control step. |
@@ -130,7 +142,7 @@ Create a sweep **once**:
 ```bash
 pixi run -e gpu wandb login
 pixi run -e gpu python -m lsy_drone_racing.control.rl_race.sweep \
-  --machine 9-2-3 --create lsy_drone_racing/control/rl_race/sweeps/L2_sweep.yaml
+  --machine 9-2-3 --create lsy_drone_racing/control/rl_race/sweeps/newtrack_reference_ab.yaml
 ```
 
 Copy the returned `ENTITY/PROJECT/SWEEP_ID`. Start an agent in tmux on each machine,
@@ -139,11 +151,11 @@ using the **same sweep ID and a different machine label**:
 ```bash
 # Machine 9-2-3
 pixi run -e gpu python -m lsy_drone_racing.control.rl_race.sweep \
-  --machine 9-2-3 --sweep ENTITY/PROJECT/SWEEP_ID --hours 10
+  --machine 9-2-3 --sweep ENTITY/PROJECT/SWEEP_ID
 
 # Machine 9-1-2, from the same shared project directory
 pixi run -e gpu python -m lsy_drone_racing.control.rl_race.sweep \
-  --machine 9-1-2 --sweep ENTITY/PROJECT/SWEEP_ID --hours 10
+  --machine 9-1-2 --sweep ENTITY/PROJECT/SWEEP_ID
 ```
 
 Each agent runs one trial at a time. Directories are created automatically.
@@ -163,9 +175,17 @@ Without arguments, `sweep.py` executes one agent-assigned trial; users normally 
 
 | File | Trials | Parameters varied |
 | --- | ---: | --- |
+| [sweeps/newtrack_reference_ab.yaml](sweeps/newtrack_reference_ab.yaml) | 64 | 16 matched recipes × Hermite/dynamic references × seeds 1/2; corrected new-track bounds |
 | [sweeps/newtrack_2day.yaml](sweeps/newtrack_2day.yaml) | 48 | 24 recipes × seeds 1/2: attitude, budget, anneal, gates, discount/GAE, rewards, actor learning rate, entropy and starts |
 | [sweeps/L2_sweep.yaml](sweeps/L2_sweep.yaml) | 25 | 16 attitude pairs, smalltrial sampling reference, gates, anneal, budgets and a seed repeat |
 | [sweeps/example.yaml](sweeps/example.yaml) | 2 | seed: 1 / 2; race_steps fixed at 12B |
+
+`newtrack_reference_ab.yaml` compares the two reference paths with the same 16 recipes and
+training seeds. It retains 16384 worlds, batch4096, 32 minibatches, unroll32, four epochs and
+3000 race PPO iterations; anneal recipes add 400. It focuses on actor LR 1e-4/1.5e-4/2e-4,
+anneal, entropy 0.005/0.002, official starts 0.5/0.75, attitude limits, and two reward controls.
+Filter W&B by `reference_path`; compare matching `experiment` and `seed` across the groups.
+The launcher has no time limit unless `--hours` is supplied.
 
 `newtrack_2day.yaml` targets about seven GPUs for two days. All trials use 16384 worlds,
 batch4096, 32 minibatches, unroll32 and four update epochs. Race runs 3000 PPO iterations;
@@ -197,7 +217,7 @@ The adapter expands the selected experiment into training arguments, records its
 | `experiment` | None | Named dictionary of training overrides, selected as one complete grid point. |
 | `tilt_limit_deg` | None | Set roll and pitch limits together; cannot combine with separate roll/pitch limits. |
 | `upload_checkpoint` | True | Include the final checkpoint in the model artifact. |
-| `sweep_trial_count` | 1 | Total planned trials for estimating cloud weight storage; YAMLs set this to 25 / 2. |
+| `sweep_trial_count` | 1 | Total planned trials for estimating cloud weight storage. |
 | `cloud_checkpoint_budget_gb` | 50 | Skip weight uploads if checkpoint bytes × trial count exceed this many GB. |
 
 Changing a local YAML does **not** update an existing cloud sweep: create a new sweep.

@@ -1,13 +1,39 @@
 """Sweep adapter runs one trial and attaches reproducible outputs without network calls."""
 
+import inspect
 import json
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from lsy_drone_racing.control.rl_race import sweep
 from lsy_drone_racing.control.rl_race import train as training
+
+
+def test_reference_sweep_pairs_both_guides_without_reducing_ppo_updates():
+    config = yaml.safe_load((sweep.RL_DIR / "sweeps/newtrack_reference_ab.yaml").read_text())
+    params = config["parameters"]
+    assert params["reference_path"]["values"] == ["hermite", "dynamic"]
+    assert params["seed"]["values"] == [1, 2]
+    recipes = params["experiment"]["values"]
+    assert len(recipes) * 2 * 2 == config["run_cap"] == 64
+    assert len({r["name"] for r in recipes}) == 16
+    fixed = {k: v["value"] for k, v in params.items() if "value" in v}
+    assert (fixed["num_envs"], fixed["batch_size"], fixed["num_minibatches"]) == (16384, 4096, 32)
+    transitions = fixed["batch_size"] * fixed["num_minibatches"] * fixed["unroll_length"]
+    assert transitions == 4_194_304
+    ignored = {"upload_checkpoint", "sweep_trial_count", "cloud_checkpoint_budget_gb"}
+    for recipe in recipes:
+        assert "reference_path" not in recipe and "seed" not in recipe
+        args = {**fixed, **recipe}
+        assert args["race_steps"] == 3000 * transitions
+        assert args["anneal_steps"] in {0, 400 * transitions}
+        args.pop("name")
+        tilt = args.pop("tilt_limit_deg")
+        args.update(roll_limit_deg=tilt, pitch_limit_deg=tilt)
+        assert set(args) - ignored <= set(inspect.signature(training.train).parameters)
 
 
 class WandbSummary(dict):
@@ -46,12 +72,14 @@ def test_trial_forwards_config_and_publishes_final_files(
         pitch_limit_deg: float | None = None,
         pretrain_eval_every_steps: int | None = None,
         race_eval_every_steps: int | None = None,
+        reference_path: str = "hermite",
     ) -> str:
         calls.update(seed=seed, policy_layers=policy_layers, run_name=run_name)
         assert roll_limit_deg == pitch_limit_deg == 75
         assert pretrain_eval_every_steps == 80_000_000
         assert race_eval_every_steps == (1_600_000_000 if grouped else 800_000_000)
         assert output_root.endswith("sweeps/standalone/runs")
+        assert reference_path == "dynamic"
         return str(tmp_path)
 
     logs, attachments, finished = [], [], []
@@ -63,6 +91,7 @@ def test_trial_forwards_config_and_publishes_final_files(
             "tilt_limit_deg": 75,
             "pretrain_eval_every_steps": 80_000_000,
             "race_eval_every_steps": 800_000_000,
+            "reference_path": "dynamic",
         },
         id="offline-test",
         log=lambda x: logs.append(x),

@@ -1,5 +1,8 @@
 """Pure functions of the Brax racing pipeline: path, observations, actions, rewards."""
 
+import json
+from pathlib import Path
+
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -8,6 +11,7 @@ from scipy.spatial.transform import Rotation as R
 from lsy_drone_racing.control.rl_race.env_wrapper import path, rewards
 from lsy_drone_racing.control.rl_race.env_wrapper.actions import ActionConfig, to_command
 from lsy_drone_racing.control.rl_race.env_wrapper.observations import ObsConfig, encode
+from lsy_drone_racing.utils import load_config
 
 # Two gates on the x axis, both passed in +x, plus one reversed entry.
 GATES_POS = jnp.array([[[1.0, 0.0, 1.0], [3.0, 0.0, 1.0]]])
@@ -15,6 +19,38 @@ GATES_QUAT = jnp.array([[[0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 0.0, 1.0]]])
 SEQUENCE = jnp.array([0, 1])
 DIRECTION = jnp.array([1.0, 1.0])
 START = jnp.array([-1.0, 0.0, 1.0])
+
+
+def test_dynamic_guide_matches_cached_nodes_and_changes_with_gate_poses():
+    config = load_config(Path(__file__).resolve().parents[3] / "config/level2.toml")
+    asset = json.loads(Path(path.__file__).with_name("dynamic_reference.json").read_text())
+    fn = path.build_dynamic_polyline(config.env.track)
+    legs = jnp.arange(20)
+    pos = np.repeat(np.array(asset["gates_pos"])[None], 20, axis=0)
+    quat = np.repeat(np.array(asset["gates_quat"])[None], 20, axis=0)
+    seq = jnp.abs(jnp.array(asset["gate_order"])) - 1
+    direction = jnp.sign(jnp.array(asset["gate_order"]))
+    start = jnp.array(asset["start_pos"])
+    points, cumulative = fn(jnp.array(pos), jnp.array(quat), seq, direction, legs, start)
+    np.testing.assert_allclose(points, asset["points"], atol=1e-6)
+    assert points.shape == (20, 33, 3)
+    assert np.isfinite(cumulative).all() and (np.diff(cumulative, axis=1) > 0).all()
+    a, _ = path.sample_polyline(points, jnp.zeros(20))
+    b, _ = path.sample_polyline(points, jnp.ones(20))
+    np.testing.assert_allclose(a, points[:, 0], atol=1e-6)
+    np.testing.assert_allclose(b, points[:, -1], atol=1e-6)
+    rotation = R.from_euler("z", 0.1)
+    shift = np.array([0.03, -0.02, 0.01])
+    moved_pos = rotation.apply(pos.reshape(-1, 3)).reshape(pos.shape) + shift
+    moved_quat = (rotation * R.from_quat(quat.reshape(-1, 4))).as_quat().reshape(quat.shape)
+    moved_start = rotation.apply(start) + shift
+    moved, _ = fn(
+        jnp.array(moved_pos), jnp.array(moved_quat), seq, direction, legs, jnp.array(moved_start)
+    )
+    expected = rotation.apply(np.array(asset["points"]).reshape(-1, 3)).reshape((20, 33, 3)) + shift
+    # Legs between gates transform with their poses; takeoff has a fixed world-frame heading.
+    np.testing.assert_allclose(moved[1:], expected[1:], atol=2e-6)
+    np.testing.assert_allclose(moved[0, 0], moved_start, atol=1e-6)
 
 
 def test_hermite_hits_control_points_and_tangents():
