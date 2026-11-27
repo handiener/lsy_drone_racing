@@ -1,0 +1,48 @@
+run_id,policy,model,action_thrust_max,notes
+deploy_20261117T100017.801841Z,old_main,sweeps/rc4jm6ou/runs/y4wu1x3h_s1,0.8,gate-3 debugging day; see notes/2026-11-17_debug_real.md
+deploy_20261117T100651.417694Z,old_main,sweeps/rc4jm6ou/runs/y4wu1x3h_s1,0.8,
+deploy_20261117T100827.697140Z,old_main,sweeps/rc4jm6ou/runs/y4wu1x3h_s1,0.8,
+deploy_20261117T102228.660876Z,old_main,sweeps/rc4jm6ou/runs/y4wu1x3h_s1,0.8,
+deploy_20261117T102459.085589Z,old_main,sweeps/rc4jm6ou/runs/y4wu1x3h_s1,0.8,
+deploy_20261117T104622.175276Z,old_main,sweeps/rc4jm6ou/runs/y4wu1x3h_s1,0.8,
+deploy_20261117T104828.785539Z,old_main,sweeps/rc4jm6ou/runs/y4wu1x3h_s1,0.8,
+deploy_20261117T110059.075060Z,old_main,sweeps/rc4jm6ou/runs/y4wu1x3h_s1,0.8,
+deploy_20261117T110653.614444Z,old_main,sweeps/rc4jm6ou/runs/y4wu1x3h_s1,0.8,
+deploy_20261117T111147.345218Z,old_main,sweeps/rc4jm6ou/runs/y4wu1x3h_s1,0.8,
+deploy_20261117T113735.863815Z,old_main,sweeps/rc4jm6ou/runs/y4wu1x3h_s1,0.8,obstacle 1 height corrected
+deploy_20261117T115247.042900Z,old_main,sweeps/rc4jm6ou/runs/y4wu1x3h_s1,0.8,
+deploy_20261117T115447.164994Z,old_main,sweeps/rc4jm6ou/runs/y4wu1x3h_s1,0.8,
+deploy_20261124T103156.240436Z,sim2real_mixed,sim2real_mixed,0.8,
+deploy_20261124T104005.928611Z,sim2real_mixed,sim2real_mixed,0.8,
+deploy_20261124T104138.654892Z,sim2real_mixed,sim2real_mixed,0.8,
+deploy_20261124T110319.258594Z,old_main,sweeps/rc4jm6ou/runs/y4wu1x3h_s1,0.8,
+deploy_20261124T110506.102769Z,old_main,sweeps/rc4jm6ou/runs/y4wu1x3h_s1,0.8,
+deploy_20261124T110640.167639Z,old_main,sweeps/rc4jm6ou/runs/y4wu1x3h_s1,0.8,
+deploy_20261124T110812.111658Z,old_main,sweeps/rc4jm6ou/runs/y4wu1x3h_s1,0.8,
+deploy_20261124T111111.789520Z,sim2real_mixed,sim2real_mixed,0.8,new battery
+deploy_20261124T111150.671339Z,sim2real_mixed,sim2real_mixed,0.8,new battery
+deploy_20261124T111246.638060Z,sim2real_mixed,sim2real_mixed,0.8,new battery
+deploy_20261124T111330.494534Z,sim2real_mixed,sim2real_mixed,0.8,new battery
+deploy_20261124T111521.337218Z,sim2real_mixed,sim2real_mixed,0.8,new battery
+deploy_20261124T111613.629545Z,sim2real_mixed,sim2real_mixed,0.8,new battery
+deploy_20261124T111700.263668Z,sim2real_mixed,sim2real_mixed,0.8,new battery
+deploy_20261124T111848.004711Z,sim2real_mixed,sim2real_mixed,0.8,new battery
+deploy_20261124T111959.794688Z,sim2real_mixed,sim2real_mixed,0.8,new battery
+deploy_20261124T112053.285186Z_wiggling,sim2real_mixed,sim2real_mixed,0.8,new battery; wiggling
+deploy_20261124T112416.471502Z,sim2real_mixed,sim2real_mixed,0.8,
+deploy_20261124T112459.316392Z,sim2real_mixed,sim2real_mixed,0.8,
+deploy_20261124T112546.328658Z,sim2real_mixed,sim2real_mixed,0.8,
+deploy_20261124T112639.836308Z,sim2real_mixed,sim2real_mixed,0.8,
+deploy_20261124T132712.321904Z,newtrack_uncapped,20261124_082231_smalltrail,0.8,deploy toml had x limit 1.5 m (gates at x=2.0)
+deploy_20261124T132908.110969Z,newtrack_uncapped,20261124_082231_smalltrail,0.8,x limit 1.5 m
+deploy_20261124T134505.566885Z,newtrack_uncapped,20261124_082231_smalltrail,0.8,x limit 1.5 m
+deploy_20261124T135204.878717Z,newtrack_uncapped,20261124_082231_smalltrail,0.8,x limit 1.5 m
+deploy_20261124T135409.436378Z,newtrack_uncapped,20261124_082231_smalltrail,0.8,x limit 1.5 m
+deploy_20261124T135935.651558Z,newtrack_uncapped,20261124_082231_smalltrail,0.8,x limit 1.5 m
+deploy_20261124T140030.361758Z,newtrack_uncapped,20261124_082231_smalltrail,0.8,x limit 1.5 m
+deploy_20261124T140838_capped.618537Z,newtrack_thrust070,20261124_113533_smalltrail_thrust070_fromscratch,0.7,x limit 1.5 m
+deploy_20261124T141152_capped.330762Z,newtrack_thrust070,20261124_113533_smalltrail_thrust070_fromscratch,0.7,crashed near start; stopped with Ctrl-C
+deploy_20261124T141306_capped.640752Z,newtrack_thrust070,20261124_113533_smalltrail_thrust070_fromscratch,0.7,x limit 1.5 m
+deploy_20261124T141548_capped.850028Z,newtrack_thrust070,20261124_113533_smalltrail_thrust070_fromscratch,0.7,x limit 1.5 m
+deploy_20261124T141750_capped.576866Z,newtrack_thrust070,20261124_113533_smalltrail_thrust070_fromscratch,0.7,x limit 1.5 m
+deploy_20261124T141955_capped.159011Z,newtrack_thrust070,20261124_113533_smalltrail_thrust070_fromscratch,0.7,x limit 1.5 m

@@ -1,0 +1,48 @@
+date,run_id,track,policy,model,action_thrust_max,outcome,gates_passed,gates_total,steps,duration_s,max_x,max_collective_pwm,has_onboard,vbat_start_v,vbat_min_v,notes
+2026-11-17,deploy_20261117T100017.801841Z,level2_single,old_main,sweeps/rc4jm6ou/runs/y4wu1x3h_s1,0.8,finished,5,5,256,5.12,1.28,65431,False,,,gate-3 debugging day; see notes/2026-11-17_debug_real.md
+2026-11-17,deploy_20261117T100651.417694Z,level2_single,old_main,sweeps/rc4jm6ou/runs/y4wu1x3h_s1,0.8,no_flight,0,,0,,,,False,,,
+2026-11-17,deploy_20261117T100827.697140Z,level2_single,old_main,sweeps/rc4jm6ou/runs/y4wu1x3h_s1,0.8,finished,5,5,265,5.3,1.28,65452,False,,,
+2026-11-17,deploy_20261117T102228.660876Z,level2_single,old_main,sweeps/rc4jm6ou/runs/y4wu1x3h_s1,0.8,ctrl_c,0,5,238,4.76,-0.18,65411,False,,,
+2026-11-17,deploy_20261117T102459.085589Z,level2_single,old_main,sweeps/rc4jm6ou/runs/y4wu1x3h_s1,0.8,ctrl_c,0,5,2212,44.4,-1.45,61097,False,,,
+2026-11-17,deploy_20261117T104622.175276Z,level2_single,old_main,sweeps/rc4jm6ou/runs/y4wu1x3h_s1,0.8,finished,5,5,244,4.88,1.2,65426,False,,,
+2026-11-17,deploy_20261117T104828.785539Z,level2_single,old_main,sweeps/rc4jm6ou/runs/y4wu1x3h_s1,0.8,finished,5,5,246,4.92,1.29,65284,False,,,
+2026-11-17,deploy_20261117T110059.075060Z,level2_single,old_main,sweeps/rc4jm6ou/runs/y4wu1x3h_s1,0.8,finished,5,5,297,5.95,1.3,65304,False,,,
+2026-11-17,deploy_20261117T110653.614444Z,level2_single,old_main,sweeps/rc4jm6ou/runs/y4wu1x3h_s1,0.8,finished,5,5,235,4.7,1.18,65370,False,,,
+2026-11-17,deploy_20261117T111147.345218Z,level2_single,old_main,sweeps/rc4jm6ou/runs/y4wu1x3h_s1,0.8,finished,5,5,224,4.48,1.22,65327,False,,,
+2026-11-17,deploy_20261117T113735.863815Z,level2_single,old_main,sweeps/rc4jm6ou/runs/y4wu1x3h_s1,0.8,ctrl_c,4,5,248,4.96,1.22,65449,False,,,obstacle 1 height corrected
+2026-11-17,deploy_20261117T115247.042900Z,level2_single,old_main,sweeps/rc4jm6ou/runs/y4wu1x3h_s1,0.8,finished,5,5,303,6.07,1.91,65485,False,,,
+2026-11-17,deploy_20261117T115447.164994Z,level2_single,old_main,sweeps/rc4jm6ou/runs/y4wu1x3h_s1,0.8,no_flight,0,,0,,,,False,,,
+2026-11-24,deploy_20261124T103156.240436Z,level2_single,sim2real_mixed,sim2real_mixed,0.8,finished,5,5,229,4.58,1.17,64709,True,3.73,2.78,
+2026-11-24,deploy_20261124T104005.928611Z,level2_single,sim2real_mixed,sim2real_mixed,0.8,finished,5,5,231,4.62,1.18,64735,True,3.71,2.75,
+2026-11-24,deploy_20261124T104138.654892Z,level2_single,sim2real_mixed,sim2real_mixed,0.8,finished,5,5,236,4.72,1.18,64856,True,3.69,2.74,
+2026-11-24,deploy_20261124T110319.258594Z,level2_single,old_main,sweeps/rc4jm6ou/runs/y4wu1x3h_s1,0.8,finished,5,5,233,4.66,1.19,65149,True,3.95,3.19,
+2026-11-24,deploy_20261124T110506.102769Z,level2_single,old_main,sweeps/rc4jm6ou/runs/y4wu1x3h_s1,0.8,finished,5,5,202,4.04,1.17,64824,True,3.99,3.15,
+2026-11-24,deploy_20261124T110640.167639Z,level2_single,old_main,sweeps/rc4jm6ou/runs/y4wu1x3h_s1,0.8,finished,5,5,283,5.67,1.15,65369,True,3.96,3.23,
+2026-11-24,deploy_20261124T110812.111658Z,level2_single,old_main,sweeps/rc4jm6ou/runs/y4wu1x3h_s1,0.8,finished,5,5,254,5.08,1.18,65379,True,3.96,3.23,
+2026-11-24,deploy_20261124T111111.789520Z,level2_single,sim2real_mixed,sim2real_mixed,0.8,finished,5,5,209,4.18,1.15,64664,True,3.96,3.15,new battery
+2026-11-24,deploy_20261124T111150.671339Z,level2_single,sim2real_mixed,sim2real_mixed,0.8,finished,5,5,210,4.2,1.14,64687,True,3.93,3.12,new battery
+2026-11-24,deploy_20261124T111246.638060Z,level2_single,sim2real_mixed,sim2real_mixed,0.8,finished,5,5,205,4.1,1.15,64658,True,3.91,3.11,new battery
+2026-11-24,deploy_20261124T111330.494534Z,level2_single,sim2real_mixed,sim2real_mixed,0.8,finished,5,5,212,4.24,1.15,64685,True,3.88,3.09,new battery
+2026-11-24,deploy_20261124T111521.337218Z,level2_single,sim2real_mixed,sim2real_mixed,0.8,finished,5,5,204,4.08,1.15,64695,True,3.88,3.08,new battery
+2026-11-24,deploy_20261124T111613.629545Z,level2_single,sim2real_mixed,sim2real_mixed,0.8,finished,5,5,204,4.08,1.16,64664,True,3.86,3.04,new battery
+2026-11-24,deploy_20261124T111700.263668Z,level2_single,sim2real_mixed,sim2real_mixed,0.8,finished,5,5,203,4.06,1.15,64767,True,3.84,3.03,new battery
+2026-11-24,deploy_20261124T111848.004711Z,level2_single,sim2real_mixed,sim2real_mixed,0.8,no_flight,0,,0,,,,False,,,new battery
+2026-11-24,deploy_20261124T111959.794688Z,level2_single,sim2real_mixed,sim2real_mixed,0.8,finished,5,5,200,4.0,1.15,64620,True,3.85,3.04,new battery
+2026-11-24,deploy_20261124T112053.285186Z_wiggling,level2_single,sim2real_mixed,sim2real_mixed,0.8,finished,5,5,210,4.2,1.15,64769,True,3.82,2.99,new battery; wiggling
+2026-11-24,deploy_20261124T112416.471502Z,level2_single,sim2real_mixed,sim2real_mixed,0.8,finished,5,5,232,4.64,1.16,64662,True,3.81,2.99,
+2026-11-24,deploy_20261124T112459.316392Z,level2_single,sim2real_mixed,sim2real_mixed,0.8,finished,5,5,211,4.22,1.17,64664,True,3.77,2.96,
+2026-11-24,deploy_20261124T112546.328658Z,level2_single,sim2real_mixed,sim2real_mixed,0.8,finished,5,5,209,4.18,1.15,64683,True,3.75,2.96,
+2026-11-24,deploy_20261124T112639.836308Z,level2_single,sim2real_mixed,sim2real_mixed,0.8,finished,5,5,224,4.48,1.16,64678,True,3.73,2.91,
+2026-11-24,deploy_20261124T132712.321904Z,newtrack_splits,newtrack_uncapped,20261124_082231_smalltrail,0.8,safety_bound,1,20,114,2.27,1.54,64796,True,3.78,2.93,deploy toml had x limit 1.5 m (gates at x=2.0)
+2026-11-24,deploy_20261124T132908.110969Z,newtrack_splits,newtrack_uncapped,20261124_082231_smalltrail,0.8,safety_bound,1,20,115,2.29,1.53,64984,True,3.75,2.85,x limit 1.5 m
+2026-11-24,deploy_20261124T134505.566885Z,newtrack_splits,newtrack_uncapped,20261124_082231_smalltrail,0.8,safety_bound,1,20,114,2.27,1.54,64530,True,3.67,2.89,x limit 1.5 m
+2026-11-24,deploy_20261124T135204.878717Z,newtrack_splits,newtrack_uncapped,20261124_082231_smalltrail,0.8,safety_bound,1,20,99,1.97,1.52,64865,True,4.09,2.83,x limit 1.5 m
+2026-11-24,deploy_20261124T135409.436378Z,newtrack_splits,newtrack_uncapped,20261124_082231_smalltrail,0.8,safety_bound,1,20,100,1.99,1.51,64709,True,4.05,3.09,x limit 1.5 m
+2026-11-24,deploy_20261124T135935.651558Z,newtrack_splits,newtrack_uncapped,20261124_082231_smalltrail,0.8,safety_bound,1,20,100,1.99,1.51,64956,True,4.01,2.88,x limit 1.5 m
+2026-11-24,deploy_20261124T140030.361758Z,newtrack_splits,newtrack_uncapped,20261124_082231_smalltrail,0.8,safety_bound,1,20,101,2.01,1.55,64986,True,3.94,3.01,x limit 1.5 m
+2026-11-24,deploy_20261124T140838_capped.618537Z,newtrack_splits,newtrack_thrust070,20261124_113533_smalltrail_thrust070_fromscratch,0.7,safety_bound,1,20,171,3.42,1.57,57156,True,3.87,2.99,x limit 1.5 m
+2026-11-24,deploy_20261124T141152_capped.330762Z,newtrack_splits,newtrack_thrust070,20261124_113533_smalltrail_thrust070_fromscratch,0.7,ctrl_c,1,20,243,4.86,0.53,56233,True,4.05,3.33,crashed near start; stopped with Ctrl-C
+2026-11-24,deploy_20261124T141306_capped.640752Z,newtrack_splits,newtrack_thrust070,20261124_113533_smalltrail_thrust070_fromscratch,0.7,safety_bound,1,20,116,2.31,1.54,56348,True,4.04,3.02,x limit 1.5 m
+2026-11-24,deploy_20261124T141548_capped.850028Z,newtrack_splits,newtrack_thrust070,20261124_113533_smalltrail_thrust070_fromscratch,0.7,safety_bound,1,20,218,4.36,1.53,57131,True,4.02,2.99,x limit 1.5 m
+2026-11-24,deploy_20261124T141750_capped.576866Z,newtrack_splits,newtrack_thrust070,20261124_113533_smalltrail_thrust070_fromscratch,0.7,safety_bound,1,20,191,3.82,1.51,56754,True,3.99,3.12,x limit 1.5 m
+2026-11-24,deploy_20261124T141955_capped.159011Z,newtrack_splits,newtrack_thrust070,20261124_113533_smalltrail_thrust070_fromscratch,0.7,safety_bound,1,20,162,3.24,1.52,57098,True,3.93,3.03,x limit 1.5 m
