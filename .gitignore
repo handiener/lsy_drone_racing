@@ -27,7 +27,7 @@ ros_ws/install
 ros_ws/log
 acados/
 
-# Local simulation recordings
+# Local simulation and deployment recordings (scripts/deploy.py --record / --onboard_log)
 /runs/
 
 # Level 2 training artifacts; selected submission exports remain tracked.
