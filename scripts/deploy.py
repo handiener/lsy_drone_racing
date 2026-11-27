@@ -127,6 +127,7 @@ def main(
                     "obstacles_pos": env.unwrapped.obstacles.pos,
                 },
                 drone_parameters=env.unwrapped.drone_parameters,
+                battery_rest_v=env.unwrapped.drone.battery_rest_v,
             )
 
         if render:

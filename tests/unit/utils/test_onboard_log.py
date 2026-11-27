@@ -7,6 +7,7 @@ import pytest
 from lsy_drone_racing.utils.onboard_log import (
     LOG_BLOCK_BYTES,
     OnboardLog,
+    battery_voltage,
     load_onboard_log,
     pack_log_blocks,
 )
@@ -82,3 +83,15 @@ def test_onboard_log_survives_crash(tmp_path: Path):
     assert not metadata["complete"] and metadata["n_samples"] == 4
     np.testing.assert_array_equal(data["gyro.x"]["value"], [0.0, 1.0, 2.0, 3.0])
     log.close()
+
+
+@pytest.mark.unit
+def test_battery_voltage_is_median_in_volts():
+    assert battery_voltage([3950, 3960, 3940, 0, 3955]) == pytest.approx(3.95)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("samples", [[], [0, 0, 0], [12000]])
+def test_battery_voltage_rejects_implausible_readings(samples: list[float]):
+    with pytest.raises(ValueError):
+        battery_voltage(samples)

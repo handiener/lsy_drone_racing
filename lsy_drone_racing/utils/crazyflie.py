@@ -22,6 +22,7 @@ from lsy_drone_racing.utils.onboard_log import (
     DEFAULT_LOG_PARAMS,
     DEFAULT_LOG_VARIABLES,
     OnboardLog,
+    battery_voltage,
     pack_log_blocks,
 )
 
@@ -87,6 +88,8 @@ class Crazyflie:
         self._log_futures: list[Future[None]] = []
         # Optional host recorder; never open another radio connection for logging.
         self.record_event: Callable[..., None] | None = None
+        # Battery voltage read before arming, i.e. at rest (None if not read or the read failed).
+        self.battery_rest_v: float | None = None
 
     @classmethod
     def from_radio(
@@ -124,12 +127,37 @@ class Crazyflie:
         self._start_estimator_updater()
 
     def reset(self, arm: bool = False) -> None:
-        """Apply race settings, reset the estimator, and optionally arm the drone."""
+        """Apply race settings, reset the estimator, and optionally arm the drone.
+
+        Before arming, the battery voltage at rest is read into ``battery_rest_v`` and recorded
+        as a ``battery_rest`` event. A failed read is logged and never blocks the flight.
+        """
         self._run(self._apply_settings)
         self._run(self._reset_estimator)
+        try:
+            self.battery_rest_v = self.read_battery_voltage()
+        except Exception as exc:  # Telemetry must not stop a deployment
+            self.battery_rest_v = None
+            logger.warning(f"Reading the battery voltage at rest failed: {exc!r}")
+        else:
+            logger.info(f"Battery at rest: {self.battery_rest_v:.2f} V")
+        if self.record_event is not None:
+            self.record_event("battery_rest", volt=self.battery_rest_v, armed=False)
         if arm:
             self._run(self._arm)
             self._run(self._unlock_thrust)
+
+    def read_battery_voltage(self, n_samples: int = 10, period_ms: int = 10) -> float:
+        """Read ``pm.vbatMV`` ``n_samples`` times and return the median in V.
+
+        Uses a temporary log block that is stopped afterwards. Call it before arming to get the
+        voltage at rest; under load the battery sags by up to about 0.9 V.
+        """
+        if self._cf is None:
+            raise RuntimeError("Connect the Crazyflie before reading the battery voltage")
+        return battery_voltage(
+            self._run(self._read_log_variable, "pm.vbatMV", n_samples, period_ms)
+        )
 
     def send_external_pose(self) -> None:
         """Send an external mocap pose to the Crazyflie estimator."""
@@ -556,6 +584,18 @@ class Crazyflie:
             for name in names_in_block:
                 await block.add_variable(name)
             self._log_streams.append(await block.start(log.period_ms))
+
+    async def _read_log_variable(self, name: str, n_samples: int, period_ms: int) -> list[float]:
+        block = await self.cf.log().create_block()
+        await block.add_variable(name)
+        stream = await block.start(period_ms)
+        try:
+            return [
+                (await asyncio.wait_for(stream.next(), timeout=1.0)).data[name]
+                for _ in range(n_samples)
+            ]
+        finally:
+            await asyncio.wait_for(stream.stop(), timeout=1.0)
 
     async def _read_log_stream(self, stream: Any, block: int) -> None:
         log = self._onboard_log

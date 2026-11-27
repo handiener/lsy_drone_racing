@@ -102,6 +102,12 @@ Controllers may optionally provide `enable_deployment_recording(obs)` and
 The Crazyflie wrapper also records converted attitude/full-state commands after submission
 to cflib2, external mocap poses sent to the onboard estimator, high-level return/landing
 commands, and emergency stops. Submission does not confirm receipt or execution onboard.
+Before arming, the wrapper reads the battery voltage at rest (median of ten `pm.vbatMV`
+readings) and records it as a `battery_rest` event and as `battery_rest_v` in the `reset`
+event. This happens on every deployment, independent of `--onboard_log`, and is printed to
+the console. Under load the battery sags by up to about 0.9 V, so this value, not a reading
+taken in flight, describes the state of charge. A failed read is logged and does not stop the
+flight (the value is then `null`).
 External-pose events continue through return/landing while the connection remains open;
 policy-loop observations stop when the race loop exits. Exceptions, interrupts, race-end,
 and cleanup events delimit the phases.

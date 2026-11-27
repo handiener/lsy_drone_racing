@@ -26,15 +26,19 @@ import json
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, TextIO
+from typing import TYPE_CHECKING, Any, TextIO
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 __all__ = [
     "DEFAULT_LOG_PARAMS",
     "DEFAULT_LOG_VARIABLES",
     "LOG_BLOCK_BYTES",
     "OnboardLog",
+    "battery_voltage",
     "load_onboard_log",
     "pack_log_blocks",
 ]
@@ -129,6 +133,21 @@ def pack_log_blocks(
         blocks[-1].append(name)
         used += size
     return blocks
+
+
+def battery_voltage(samples_mv: Sequence[float]) -> float:
+    """Battery voltage in V from repeated ``pm.vbatMV`` readings (median, robust to outliers).
+
+    Raises:
+        ValueError: If there are no readings or the median is outside the range of a 1S LiPo,
+            which indicates a wrong variable or a broken reading rather than a real battery.
+    """
+    if len(samples_mv) == 0:
+        raise ValueError("No battery voltage readings")
+    volt = float(np.median(samples_mv)) / 1000.0
+    if not 2.5 <= volt <= 4.5:
+        raise ValueError(f"Implausible battery voltage {volt:.3f} V")
+    return volt
 
 
 @dataclass
