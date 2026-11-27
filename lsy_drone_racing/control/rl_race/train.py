@@ -22,7 +22,7 @@ import json
 import pickle
 import sys
 import time
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -36,6 +36,7 @@ from lsy_drone_racing.control.rl_race.env_wrapper import rewards
 from lsy_drone_racing.control.rl_race.env_wrapper.actions import ActionConfig
 from lsy_drone_racing.control.rl_race.env_wrapper.env import EnvConfig, RaceEnv
 from lsy_drone_racing.control.rl_race.env_wrapper.observations import ObsConfig
+from lsy_drone_racing.control.rl_race.env_wrapper.sim_to_real import SimToRealConfig
 from lsy_drone_racing.control.rl_race.env_wrapper.starts import StartConfig
 from lsy_drone_racing.control.rl_race.network import NetworkConfig
 from lsy_drone_racing.control.rl_race.optim import iteration_updates, lr_schedules, separate_lr
@@ -128,6 +129,8 @@ def train(
     official_start_prob: float = 0.5,
     max_episode_steps: int = 1250,
     reference_path: str = "hermite",
+    sim_to_real: str = "none",
+    sim_to_real_nominal_prob: float = 0.35,
     # Schedule.
     pretrain_max_steps: int = 2_000_000_000,
     pretrain_crash: float | None = 20.0,
@@ -178,11 +181,14 @@ def train(
     final_eval_episodes: int = 1024,
     final_eval_seeds: tuple[int, ...] = (100000, 200000, 300000),
     final_eval_batch_size: int = 256,
+    save_step_checkpoints: bool = False,
+    final_eval: bool = True,
     wandb_project: str | None = None,
     wandb_entity: str | None = None,
     wandb_group: str | None = None,
 ) -> str:
     """Run the staged training and return the run directory."""
+    s2r_config = SimToRealConfig(sim_to_real, sim_to_real_nominal_prob)
     if eval_every_steps <= 0:
         raise ValueError("eval_every_steps must be positive")
     if reference_path not in {"hermite", "dynamic"}:
@@ -208,7 +214,7 @@ def train(
     root = Path(output_root).expanduser().resolve() if output_root else RL_DIR / "outputs"
     run_dir = root / run_name
     run_dir.mkdir(parents=True, exist_ok=False)
-    settings = locals().copy()
+    settings = {key: value for key, value in locals().copy().items() if key != "s2r_config"}
     settings["policy_layers"], settings["value_layers"] = list(policy_layers), list(value_layers)
     network_config = NetworkConfig(
         tuple(policy_layers), tuple(value_layers), activation, noise_scale
@@ -286,6 +292,8 @@ def train(
                 thrust_max_fraction,
                 reference_path,
             )
+            cfg = replace(cfg, sim_to_real=s2r_config)
+            eval_cfg = replace(eval_cfg, sim_to_real=s2r_config)
             env = RaceEnv(num_envs, cfg, device=device, seed=seed)
             eval_env = RaceEnv(num_eval_envs, eval_cfg, device=device, seed=seed + 10_000)
             steps = {"pretrain": pretrain_max_steps, "race": race_steps, "anneal": anneal_steps}[
@@ -319,6 +327,8 @@ def train(
             def keep_params(step: int, _make_policy: Any, current: Any, stage: str = stage) -> None:
                 latest["step"], latest["params"] = step, current
                 save_params(current, run_dir / "checkpoints" / f"{stage}_latest.pkl")
+                if save_step_checkpoints:
+                    save_params(current, run_dir / "checkpoints" / f"{stage}_step_{step:012d}.pkl")
 
             def progress(step: int, metrics: dict[str, Any], stage: str = stage) -> None:
                 values = {k: float(v) for k, v in metrics.items() if np.ndim(v) == 0}
@@ -329,9 +339,27 @@ def train(
                 opt_step = (step // transitions) * updates
                 values["lr/policy"] = float(schedule["policy"](opt_step))
                 values["lr/value"] = float(schedule["value"](opt_step))
+                with (run_dir / "training_metrics.jsonl").open("a") as stream:
+                    stream.write(
+                        json.dumps(
+                            dict(
+                                step=step_offset + step,
+                                wall_seconds=time.time() - started,
+                                is_eval=is_eval,
+                                metrics=values,
+                            )
+                        )
+                        + "\n"
+                    )
                 if wandb_run is not None:
                     wandb_run.log(values, step=step_offset + step)
                 if not is_eval:
+                    if not intermediate_eval:
+                        print(
+                            f"[{stage}] step {step_offset + step:,d} | "
+                            f"{(time.time() - started) / 60:.1f} min (evaluation disabled)",
+                            flush=True,
+                        )
                     return
                 rate, lap = values["eval/success_rate"], values["eval/lap_time"]
                 elapsed = time.time() - started
@@ -450,7 +478,7 @@ def train(
                     flush=True,
                 )
                 break
-        if stage_log and stage_log[-1]["stage"] in {"race", "anneal"}:
+        if final_eval and stage_log and stage_log[-1]["stage"] in {"race", "anneal"}:
             from lsy_drone_racing.control.rl_race.evaluation import evaluate
 
             report = evaluate(

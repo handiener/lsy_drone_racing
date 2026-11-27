@@ -34,6 +34,8 @@ from lsy_drone_racing.control.rl_race.env_wrapper.observations import (
 )
 from lsy_drone_racing.control.rl_race.env_wrapper.starts import StartConfig, build_path_start
 
+from .sim_to_real import SimToReal, SimToRealConfig
+
 DEFAULT_CONFIG = Path(__file__).resolve().parents[4] / "config" / "level2.toml"
 
 # Per-step metrics; Brax sums them over an episode (training logs and evaluation).
@@ -59,6 +61,7 @@ class EnvConfig:
     reward: rewards.RewardConfig = field(default_factory=rewards.RewardConfig)
     start: StartConfig = field(default_factory=StartConfig)
     reference_path: str = "hermite"
+    sim_to_real: SimToRealConfig = field(default_factory=SimToRealConfig)
 
 
 class RaceEnv(Env):
@@ -99,6 +102,9 @@ class RaceEnv(Env):
         )
         # Resets are done here (with path starts), not by the core.
         core.settings = core.settings.replace(autoreset=False)
+        self._s2r = (
+            SimToReal(core, self.cfg.sim_to_real) if self.cfg.sim_to_real.preset != "none" else None
+        )
         core._step = core.build_step_fn()
         self._core = core
         self._template = core.data
@@ -156,6 +162,12 @@ class RaceEnv(Env):
         data, official = self._apply_starts(data, everyone, start_key)
         previous_action = jnp.zeros((self.n_envs, ACTION_SIZE), jnp.float32)
         raw = squeeze_drone_axis(race_obs(data))
+        s2r = None
+        if self._s2r is not None:
+            key, perturb_key = jax.random.split(key)
+            s2r = self._s2r.update(None, raw, everyone, perturb_key)
+            data = self._s2r.apply(data, s2r)
+            raw = self._s2r.observe(raw, s2r)
         zeros = jnp.zeros(self.n_envs, jnp.float32)
         metrics = {name: zeros for name in METRICS}
         info = {
@@ -167,6 +179,8 @@ class RaceEnv(Env):
             "episode_done": zeros,
             "episode_metrics": {"sum_reward": zeros, "length": zeros, **metrics},
         }
+        if s2r is not None:
+            info["sim_to_real"] = s2r
         return State(
             pipeline_state=data,
             obs=encode(raw, previous_action, self.cfg.obs),
@@ -183,6 +197,7 @@ class RaceEnv(Env):
         data = state.pipeline_state
         prev = squeeze_drone_axis(race_obs(data))
         prev_passed = prev["n_gates_passed"].astype(jnp.int32)
+        perturb = state.info.get("sim_to_real")
         data, (raw, _, terminated, truncated, _) = self._core._step(
             data, to_command(action, self.action_cfg)
         )
@@ -239,6 +254,12 @@ class RaceEnv(Env):
         official = jnp.where(done, new_official.astype(jnp.float32), official)
         previous_action = jnp.where(done[:, None], 0.0, jnp.clip(action, -1.0, 1.0))
         next_raw = squeeze_drone_axis(race_obs(data))
+        s2r = None
+        if self._s2r is not None:
+            key, perturb_key = jax.random.split(key)
+            s2r = self._s2r.update(perturb, next_raw, done, perturb_key)
+            data = self._s2r.apply(data, s2r)
+            next_raw = self._s2r.observe(next_raw, s2r)
         info = {
             "rng": key,
             "previous_action": previous_action,
@@ -248,6 +269,8 @@ class RaceEnv(Env):
             "episode_done": donef,
             "episode_metrics": episode,
         }
+        if s2r is not None:
+            info["sim_to_real"] = s2r
         return State(
             pipeline_state=data,
             obs=encode(next_raw, previous_action, self.cfg.obs),

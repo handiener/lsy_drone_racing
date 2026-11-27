@@ -55,6 +55,7 @@ pretrain interval (1.6B). Setting `--race_eval_every_steps` overrides that ratio
 Intervals count environment transitions and round up to training boundaries; lower
 `--eval_every_steps` if finer race spacing is needed.
 Final evaluation after race/anneal still runs regardless of this flag.
+Use `--final_eval=False` to skip final evaluation explicitly.
 
 <details>
 <summary><strong>Training arguments: meaning and actual defaults</strong></summary>
@@ -77,6 +78,8 @@ Boolean/list examples: `--continue_race=True`, `--policy_layers='(256,256)'`.
 | `--official_start_prob` | `0.5` | Official-start probability; remaining starts are sampled along the path. |
 | `--max_episode_steps` | `1250` | Maximum control steps per episode: 25 seconds at 50 Hz. |
 | `--reference_path` | `hermite` | `hermite` or the bundled offline `dynamic` guide. |
+| `--sim_to_real` | `none` | Optional actuator/observation profile: `none`, `reference` (fixed), or `estimator_mix` (mixed). |
+| `--sim_to_real_nominal_prob` | `0.35` | Unchanged-episode probability when a sim-to-real profile is enabled. |
 | `--pretrain_max_steps` | `2000000000` | Maximum pretrain environment transitions; may switch earlier. |
 | `--pretrain_crash` | `20.0` | Pretrain crash penalty. |
 | `--pretrain_time` | `0.2` | Pretrain time penalty per control step. |
@@ -124,6 +127,8 @@ Boolean/list examples: `--continue_race=True`, `--policy_layers='(256,256)'`.
 | `--final_eval_episodes` | `1024` | Final official-start episodes PER evaluation seed. |
 | `--final_eval_seeds` | `(100000, 200000, 300000)` | Seeds for final evaluation, independent of the training seed. |
 | `--final_eval_batch_size` | `256` | Worlds per final evaluation batch. |
+| `--save_step_checkpoints` | `False` | Also retain numbered checkpoints at training chunk boundaries. |
+| `--final_eval` | `True` | Run independent final evaluation after race/anneal. |
 | `--wandb_project` | `None` | Standalone-run logging project; None disables standalone W&B initialization. |
 | `--wandb_entity` | `None` | Standalone W&B user/team; None uses account default. |
 | `--wandb_group` | `None` | Optional standalone W&B run group. |
@@ -134,6 +139,42 @@ Boolean/list examples: `--continue_race=True`, `--policy_layers='(256,256)'`.
 one iteration makes `num_minibatches × num_updates_per_batch` SGD updates. With the defaults,
 12B requested race steps round to **3,000 PPO iterations / 384,000 SGD updates**.
 Changing batch size changes these counts; it is not only a VRAM setting.
+
+### Fine-tune a chosen model for sim-to-real
+
+```bash
+pixi run -e gpu python -m lsy_drone_racing.control.rl_race.finetune_sim_to_real \
+  --source="lsy_drone_racing/control/rl_race/outputs/sweeps/i09qw29r/league pool single/b0ixjlyy_s2" \
+  --run_name=H1_mixed
+```
+
+`--source` accepts a run folder or its `checkpoints/*.pkl` file. A folder automatically selects
+the final race/anneal stage. Each continuation keeps that model's reference, reward, action
+limits and network; actor, critic and normalization are restored with a fresh optimizer.
+Use a new run name for each continuation. Results go to `outputs/sim2real_training/RUN/`.
+
+The default `--sim_to_real=estimator_mix` preserves the old-track mixed wrapper: 35% unchanged
+episodes; the rest have physical thrust caps of 0.68–0.74 N, rotor-response multipliers
+0.75–0.90, and either 20/40/60 ms angular-velocity observation age or smoothing with
+20–60 ms time constants. Parameters stay fixed within each episode. `reference` uses
+0.70 N, response multiplier 0.8 and 40 ms observation age for its perturbed episodes.
+Both profiles require 50 Hz. They add to the current TOML randomizations; they change physical
+actuation and the policy's angular-velocity input, leaving its command scaling intact.
+
+Defaults retain 16384 worlds, batch4096, 32 minibatches, unroll32 and four PPO epochs.
+`--steps=2147483648` gives 512 PPO iterations (old-track trial: 256). Actor/critic learning
+rates are 2e-5/1e-4, with five warmup iterations and decay to 50%; entropy is 0.001.
+Numbered checkpoints are saved every 128 iterations. `--steps=1073741824` reproduces the old
+256-iteration budget. Override spacing with `--checkpoint_every_iterations=128`.
+Intermediate evaluation is off by default; `--intermediate_eval=True` enables it at that spacing.
+Training metrics are saved in `training_metrics.jsonl`.
+
+Final evaluation writes `final_evaluation.json` for the training mixture and
+`nominal_evaluation.json` for ordinary simulation, each using 3 × 1024 episodes.
+The portable actor is exported to the new run's `exported/` directory.
+For an existing numbered checkpoint, evaluate with `--checkpoint=step_000536870912` and a new
+`--report_name`. Evaluation normally uses the saved profile; `--sim_to_real=none` selects
+ordinary simulation, while `--sim_to_real=estimator_mix` selects perturbed episodes only.
 
 ## 2. Run a sweep on one or more machines
 

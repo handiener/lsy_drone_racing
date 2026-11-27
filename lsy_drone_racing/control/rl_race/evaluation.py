@@ -15,6 +15,7 @@ from .env_wrapper.actions import ActionConfig
 from .env_wrapper.env import EnvConfig, RaceEnv
 from .env_wrapper.observations import ObsConfig
 from .env_wrapper.rewards import RewardConfig
+from .env_wrapper.sim_to_real import SimToRealConfig
 from .env_wrapper.starts import StartConfig
 from .export import policy_arrays
 
@@ -36,16 +37,23 @@ def evaluate(
     batch_size: int = 256,
     device: str = "gpu",
     report_name: str = "final",
+    sim_to_real: str | None = None,
+    checkpoint: str = "final",
 ) -> dict:
     """Evaluate `episodes` official-start episodes per seed; write JSON and episode rows."""
     if episodes < 1 or batch_size < 1 or not seeds:
         raise ValueError("Positive episode count, batch size and nonempty seeds required")
     if not report_name or Path(report_name).name != report_name or report_name in {".", ".."}:
         raise ValueError("report_name must be a simple filename prefix")
+    if not checkpoint or Path(checkpoint).name != checkpoint or checkpoint in {".", ".."}:
+        raise ValueError("checkpoint must be a simple checkpoint suffix")
     run = Path(run_dir).resolve()
     config = json.loads((run / f"{stage}_config.json").read_text())
     c = config["env"]
     cfg = EnvConfig(
+        sim_to_real=SimToRealConfig(**c.get("sim_to_real", {}))
+        if sim_to_real is None
+        else SimToRealConfig(sim_to_real, nominal_prob=0.0),
         max_episode_steps=c["max_episode_steps"],
         action=ActionConfig(**c["action"]),
         obs=ObsConfig(**c["obs"]),
@@ -55,7 +63,9 @@ def evaluate(
     )
     arrays = jax.tree.map(
         jnp.asarray,
-        policy_arrays(pickle.loads((run / "checkpoints" / f"{stage}_final.pkl").read_bytes())),
+        policy_arrays(
+            pickle.loads((run / "checkpoints" / f"{stage}_{checkpoint}.pkl").read_bytes())
+        ),
     )
     count = min(batch_size, episodes)
     env = RaceEnv(count, cfg, device=device)
@@ -107,6 +117,10 @@ def evaluate(
     successful = [r["time"] for r in rows if r["success"]]
     report = dict(
         stage=stage,
+        sim_to_real={
+            "preset": cfg.sim_to_real.preset,
+            "nominal_prob": cfg.sim_to_real.nominal_prob,
+        },
         report_name=report_name,
         batch_size=count,
         episodes=len(rows),
@@ -116,7 +130,7 @@ def evaluate(
         mean_success_time=float(np.mean(successful)) if successful else None,
         std_success_time=float(np.std(successful)) if successful else None,
         mean_gates=float(np.mean([r["gates"] for r in rows])),
-        checkpoint=str(run / "checkpoints" / f"{stage}_final.pkl"),
+        checkpoint=str(run / "checkpoints" / f"{stage}_{checkpoint}.pkl"),
         per_seed={
             str(s): dict(
                 success_rate=np.mean([r["success"] for r in rows if r["seed"] == s]).item()
