@@ -120,6 +120,35 @@ def compute_ppo_loss(
     )
 
 
+def episode_batch(env: Any, policy: Any, params: Any, key: Any, count: int, length: int) -> dict:
+    """Collect each world's first episode with shared training/final-evaluation carry rules."""
+    state = env.reset(jax.random.split(key, count))
+    totals = {k: jnp.zeros(count) for k in state.metrics}
+    totals.update(reward=jnp.zeros(count), duration=jnp.zeros(count))
+
+    def step(carry: Any, _: Any) -> tuple:
+        state, seen, totals, key = carry
+        key, subkey = jax.random.split(key)
+        hidden, action, _ = policy(state.obs, state.info["recurrent"], subkey)
+        next_state = env.step(state, action)
+        next_state = next_state.replace(
+            info=dict(
+                next_state.info,
+                recurrent=reset_carry(
+                    hidden, next_state.info.get("learner_reset", next_state.done) > 0
+                ),
+            )
+        )
+        metrics = dict(next_state.metrics, reward=next_state.reward, duration=jnp.ones(count) / 50)
+        totals = {k: totals[k] + jnp.where(~seen, metrics[k], 0.0) for k in totals}
+        return (next_state, seen | (next_state.done > 0), totals, key), None
+
+    (_, seen, totals, _), _ = jax.lax.scan(
+        step, (state, jnp.zeros(count, bool), totals, key), None, length=length
+    )
+    return dict(totals, seen=seen)
+
+
 class Evaluator:
     """Fixed-seed first-episode evaluation with exactly the rollout carry semantics."""
 
@@ -139,35 +168,16 @@ class Evaluator:
         self._run = jax.jit(self._evaluate)
 
     def _evaluate(self, params: Any, key: Any) -> dict:
-        env = self.env
-        state = env.reset(jax.random.split(key, self.count))
-        seen = jnp.zeros(self.count, bool)
-        sums = {k: jnp.zeros(self.count) for k in state.metrics}
-        sums["reward"] = jnp.zeros(self.count)
-        policy = self.policy_fn(params)
-
-        def step(carry: Any, _: Any) -> tuple:
-            state, seen, sums, key = carry
-            key, subkey = jax.random.split(key)
-            hidden, action, _ = policy(state.obs, state.info["recurrent"], subkey)
-            next_state = env.step(state, action)
-            info = dict(
-                next_state.info,
-                recurrent=reset_carry(
-                    hidden, next_state.info.get("learner_reset", next_state.done) > 0
-                ),
-            )
-            next_state = next_state.replace(info=info)
-            metrics = dict(next_state.metrics, reward=next_state.reward)
-            sums = {k: sums[k] + jnp.where(~seen, metrics[k], 0.0) for k in sums}
-            return (next_state, seen | (next_state.done > 0), sums, key), None
-
-        (_, seen, sums, _), _ = jax.lax.scan(
-            step, (state, seen, sums, key), None, length=self.length
+        result = episode_batch(
+            self.env, self.policy_fn(params), params, key, self.count, self.length
         )
         return {
-            **{f"eval/episode_{k}": jnp.mean(v) for k, v in sums.items()},
-            "eval/all_finished": jnp.all(seen).astype(jnp.float32),
+            **{
+                f"eval/episode_{k}": jnp.mean(v)
+                for k, v in result.items()
+                if k not in {"seen", "duration"}
+            },
+            "eval/all_finished": jnp.all(result["seen"]).astype(jnp.float32),
         }
 
     def run_evaluation(self, params: Any, training_metrics: dict, **kwargs: Any) -> dict:

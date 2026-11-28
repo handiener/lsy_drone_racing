@@ -17,13 +17,11 @@ from crazyflow.sim.sim import sync_sim2mjx
 
 from lsy_drone_racing.envs import race_core
 from lsy_drone_racing.envs.multi_drone_race import VecMultiDroneRaceEnv
-from lsy_drone_racing.utils import load_config
 
-from ..league import probabilities
 from ..network import reset_carry, zeros
 from . import rewards
-from .actions import ActionConfig, to_command
-from .env import METRICS, EnvConfig, RaceEnv
+from .actions import to_command
+from .env import METRICS, EnvConfig, RaceEnv, load_track
 from .observations import encode
 
 DEFAULT_CONFIG = Path(__file__).resolve().parents[4] / "config/multi_new_level2.toml"
@@ -71,11 +69,8 @@ class MultiRaceEnv(RaceEnv):
         self.cfg, self.n_envs, self.league, self.network = cfg, int(n_envs), league, network
         self.seed = seed
         self.config_path = Path(config_path or DEFAULT_CONFIG).resolve()
-        config = load_config(self.config_path)
-        if len(config.env.track.drones) != 2:
-            raise ValueError("League environment requires exactly two drones")
-        config.sim.render = False
-        self.freq = 50
+        config = load_track(self.config_path, 2)
+        self.freq = int(config.env.kwargs[0]["freq"])
         self.full_race, self.fixed_opponent = full_race, fixed_opponent
         self.deterministic_opponent = deterministic_opponent
         self.swap_starts = swap_starts
@@ -83,11 +78,11 @@ class MultiRaceEnv(RaceEnv):
         self.last_snapshot = 0
         self._core = VecMultiDroneRaceEnv(
             num_envs=n_envs,
-            freq=50,
+            freq=self.freq,
             sim_config=config.sim,
             track=config.env.track,
             sensor_range=config.env.kwargs[0]["sensor_range"],
-            control_mode="attitude",
+            control_mode=config.env.kwargs[0]["control_mode"],
             disturbances=config.env.get("disturbances"),
             randomizations=config.env.get("randomizations"),
             seed=seed,
@@ -97,16 +92,7 @@ class MultiRaceEnv(RaceEnv):
         self._core.settings = self._core.settings.replace(autoreset=False)
         self._template = self._core.data
         low, high = self._core.single_action_space.low[0], self._core.single_action_space.high[0]
-        a = cfg.action
-        self.action_cfg = ActionConfig(
-            a.roll_limit_deg,
-            a.pitch_limit_deg,
-            a.yaw_limit_deg,
-            a.thrust_min_fraction,
-            a.thrust_max_fraction,
-            float(low[3] + (high[3] - low[3]) * a.thrust_min_fraction),
-            float(low[3] + (high[3] - low[3]) * a.thrust_max_fraction),
-        )
+        self.action_cfg = cfg.action.with_thrust_bounds(float(low[3]), float(high[3]))
         if asdict(self.action_cfg) != league.action:
             raise ValueError("Frozen opponents must use the same action scaling as learner")
         self.n_seq = int(self._template.gate_sequence.shape[0])
@@ -129,7 +115,9 @@ class MultiRaceEnv(RaceEnv):
 
         def step(data: Any, action: Any) -> tuple:
             data = apply(action, data)
-            data = data.replace(sim_data=sim_step(data.sim_data, data.sim_data.core.freq // 50))
+            data = data.replace(
+                sim_data=sim_step(data.sim_data, data.sim_data.core.freq // self.freq)
+            )
             physical_pos = data.sim_data.states.pos
             mocap_pos = template.mocap_pos.at[..., gate_ids, :].set(data.gates_pos)
             mocap_pos = mocap_pos.at[..., obstacle_ids, :].set(data.obstacles_pos)
@@ -204,13 +192,7 @@ class MultiRaceEnv(RaceEnv):
     def _sample(self, key: Any, pool: Any) -> Any:
         if self.fixed_opponent is not None:
             return jnp.full((self.n_envs,), self.fixed_opponent, jnp.int32)
-        p = probabilities(
-            pool["count"],
-            self.league.capacity,
-            self.league.solo_fraction,
-            self.league.exponent,
-            pool["ranks"],
-        )
+        p = self.league.probabilities(pool)
         return jax.random.choice(key, self.league.capacity, (self.n_envs,), p=p)
 
     def reset(self, rng: Any) -> State:
@@ -242,7 +224,7 @@ class MultiRaceEnv(RaceEnv):
                 zeros((self.n_envs,), self.cfg.hidden_size),
                 zeros((self.n_envs,), self.cfg.hidden_size),
             ),
-            opponent_carry=zeros((self.n_envs,), self.cfg.hidden_size),
+            opponent_carry=zeros((self.n_envs,), self.league.hidden_size),
             opponent_obs=opp,
             opponent_index=index,
             league=pool,
@@ -254,40 +236,28 @@ class MultiRaceEnv(RaceEnv):
         info = state.info
         pool, index = info["league"], info["opponent_index"]
         key, opp_key, swap_key, sample_key = jax.random.split(info["rng"], 4)
-        actor = jax.tree.map(lambda x: x[index], pool["actor"])
-        stats = jax.tree.map(lambda x: x[index], pool["stats"])
-
-        def forward(params, normalizer, obs, carry, key):
-            carry, logits = self.network.policy_network.apply(normalizer, params, obs, carry)
-            raw = (
-                logits[..., :4]
-                if self.deterministic_opponent
-                else self.network.parametric_action_distribution.sample_no_postprocessing(
-                    logits, key
-                )
-            )
-            return carry, self.network.parametric_action_distribution.postprocess(raw)
-
-        opponent_carry, opponent_action = jax.vmap(forward)(
-            actor,
-            stats,
+        opponent_carry, opponent_action, opponent_command = self.league.predict(
+            pool,
+            index,
             info["opponent_obs"],
             info["opponent_carry"],
-            jax.random.split(opp_key, self.n_envs),
+            opp_key,
+            self.deterministic_opponent,
         )
-        opponent_carry, opponent_action = jax.tree.map(
-            jax.lax.stop_gradient, (opponent_carry, opponent_action)
+        opponent_carry, opponent_action, opponent_command = jax.tree.map(
+            jax.lax.stop_gradient, (opponent_carry, opponent_action, opponent_command)
         )
         joint = jnp.stack([action, opponent_action], axis=1)
         prev = state.pipeline_state
-        data, pair, positions = self._physics(prev, to_command(joint, self.action_cfg))
+        commands = jnp.stack([to_command(action, self.action_cfg), opponent_command], axis=1)
+        data, pair, positions = self._physics(prev, commands)
         passed = data.n_gates_passed
         before = prev.n_gates_passed
         finished = (passed >= self.n_seq) & (before < self.n_seq)
         crashed = data.disabled_drones & ~(passed >= self.n_seq)
         timeout = data.steps >= self.cfg.max_episode_steps
         done, win, loss, draw = outcome(finished, crashed, timeout)
-        finish_times = jnp.where(finished, data.steps[:, None] / 50, info["finish_times"])
+        finish_times = jnp.where(finished, data.steps[:, None] / self.freq, info["finish_times"])
         if self.full_race:
             ended = data.disabled_drones | (passed >= self.n_seq)
             done = jnp.all(ended, axis=1) | timeout
@@ -303,7 +273,7 @@ class MultiRaceEnv(RaceEnv):
         # outcome; only pure time limits bootstrap the physical terminal state.
         trunc = timeout & ~jnp.any(finished | crashed, axis=1)
         event = rewards.events(before[:, 0], passed[:, 0], crash_event[:, 0], self.n_seq)
-        seconds = data.steps.astype(jnp.float32) / 50
+        seconds = data.steps.astype(jnp.float32) / self.freq
         reward, parts = rewards.compute(
             self.cfg.reward,
             event,
@@ -387,8 +357,6 @@ class MultiRaceEnv(RaceEnv):
         if iteration - self.last_snapshot < self.snapshot_interval:
             return state
         self.last_snapshot = iteration
-        from dataclasses import asdict
-
         from ..checkpoint import save
 
         file = self.league.directory / f"iteration_{iteration:08d}.pkl"

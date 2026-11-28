@@ -4,7 +4,6 @@ method: grid
 metric: {name: final/leaderboard_score, goal: minimize}
 command: ["${env}", pixi, run, -e, gpu, python, -m, lsy_drone_racing.control.rl_race_multi.sweep]
 parameters:
+  config_file: {value: lsy_drone_racing/control/rl_race_multi/configs/full.yaml}
   seed: {values: [1, 2]}
-  hidden_size: {value: 256}
-  unroll_length: {value: 32}
   sweep_trial_count: {value: 2}

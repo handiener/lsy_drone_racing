@@ -107,6 +107,23 @@ class NetworkConfig:
         return build
 
 
+def network_from_metadata(metadata: dict) -> NetworkConfig:
+    """Restore the shared architecture contract for training, opponents and deployment."""
+    if (
+        metadata.get("type") != "independent_lstm"
+        or metadata.get("observation_dim") != 57
+        or metadata.get("action_dim") != 4
+    ):
+        raise ValueError("Expected independent recurrent 57D/four-action architecture")
+    return NetworkConfig(
+        tuple(metadata["policy_layers"]),
+        tuple(metadata["value_layers"]),
+        metadata["activation"],
+        metadata["noise_scale"],
+        metadata["hidden_size"],
+    )
+
+
 def inference(
     networks: RecurrentNetworks,
     params: Any,

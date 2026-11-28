@@ -9,7 +9,7 @@ from typing import Any
 import jax
 import numpy as np
 
-from .network import NetworkConfig
+from .network import NetworkConfig, network_from_metadata
 
 FORMAT_VERSION = 3
 
@@ -45,7 +45,11 @@ def save(
 
 
 def load(path: str | Path, network: dict | None = None, action: dict | None = None) -> dict:
-    payload = pickle.loads(Path(path).read_bytes())
+    return validate(pickle.loads(Path(path).read_bytes()), network, action)
+
+
+def validate(payload: Any, network: dict | None = None, action: dict | None = None) -> dict:
+    """Validate an already loaded payload without reopening its weights file."""
     if not isinstance(payload, dict) or payload.get("format_version") != FORMAT_VERSION:
         raise ValueError("Expected recurrent checkpoint v3; legacy MLP weights are incompatible")
     if payload["network"].get("observation_dim") != 57 or payload["network"].get("action_dim") != 4:
@@ -70,13 +74,7 @@ def _expected_shapes(config: NetworkConfig) -> tuple:
 
 def _validate_params(payload: dict) -> None:
     metadata = payload["network"]
-    config = NetworkConfig(
-        tuple(metadata["policy_layers"]),
-        tuple(metadata["value_layers"]),
-        metadata["activation"],
-        metadata["noise_scale"],
-        metadata["hidden_size"],
-    )
+    config = network_from_metadata(metadata)
     if config.metadata() != metadata:
         raise ValueError("Invalid recurrent network metadata")
     stats, actor, critic = payload["params"]

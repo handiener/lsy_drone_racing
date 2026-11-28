@@ -20,34 +20,44 @@ class WandbSummary(dict):
 
 @pytest.mark.parametrize("budget,uploaded", [(50, True), (1e-12, False)])
 @pytest.mark.parametrize("grouped", [False, True])
+@pytest.mark.parametrize("stage", ["multi", "race"])
+@pytest.mark.parametrize("base_config", [False, True])
 def test_trial_forwards_config_and_publishes_final_files(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, budget: float, uploaded: bool, grouped: bool
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    budget: float,
+    uploaded: bool,
+    grouped: bool,
+    stage: str,
+    base_config: bool,
 ):
     calls = {}
     checkpoint = tmp_path / "race_final.pkl"
     checkpoint.write_bytes(b"test")
     report = {
-        "stage": "multi",
+        "stage": stage,
         "success_rate": 0.8,
         "mean_success_time": 4.0,
         "checkpoint": str(checkpoint),
     }
     (tmp_path / "final_evaluation.json").write_text(json.dumps(report))
-    (tmp_path / "multi_config.json").write_text("{}")
+    (tmp_path / f"{stage}_config.json").write_text("{}")
     (tmp_path / "stages.json").write_text("[]")
     (tmp_path / "settings.json").write_text("{}")
 
     def train(
-        seed: int = 0,
-        policy_layers: tuple[int, ...] = (256,),
+        seed: int = 3,
+        policy_layers: tuple[int, ...] = (32, 32),
         run_name: str | None = None,
         wandb_project: str | None = None,
         output_root: str | None = None,
         roll_limit_deg: float | None = None,
         pitch_limit_deg: float | None = None,
+        end_stage: str = "multi",
     ) -> str:
         calls.update(seed=seed, policy_layers=policy_layers, run_name=run_name)
         assert roll_limit_deg == pitch_limit_deg == 75
+        assert end_stage == stage
         assert output_root.endswith("sweeps/standalone/runs")
         return str(tmp_path)
 
@@ -58,6 +68,7 @@ def test_trial_forwards_config_and_publishes_final_files(
             "policy_layers": [32, 32],
             "cloud_checkpoint_budget_gb": budget,
             "tilt_limit_deg": 75,
+            "end_stage": stage,
         },
         id="offline-test",
         log=lambda x: logs.append(x),
@@ -70,6 +81,13 @@ def test_trial_forwards_config_and_publishes_final_files(
             "name": "tilt75",
             "tilt_limit_deg": run.config.pop("tilt_limit_deg"),
         }
+    config_path = tmp_path / "shared.yaml"
+    if base_config:
+        config_path.write_text(
+            "seed: 99\npolicy_layers: [64]\nend_stage: pretrain\n"
+            "roll_limit_deg: 60\npitch_limit_deg: 60\n"
+        )
+        run.config["config_file"] = str(config_path)
     monkeypatch.setattr(training, "train", train)
     monkeypatch.setattr(sweep.wandb, "init", lambda **kwargs: run)
     monkeypatch.setattr(
@@ -81,6 +99,7 @@ def test_trial_forwards_config_and_publishes_final_files(
     assert calls == {"seed": 3, "policy_layers": (32, 32), "run_name": "offline-test_s3"}
     manifest = json.loads((tmp_path / "trial_manifest.json").read_text())
     assert manifest["experiment"] == ("tilt75" if grouped else None)
+    assert manifest["config_file"] == (str(config_path) if base_config else None)
     if grouped:
         assert run.summary["experiment"] == "tilt75"
     assert logs[0]["final/success_rate"] == 0.8

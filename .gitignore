@@ -41,3 +41,6 @@ acados/
 # Per-machine W&B agent state on the shared lab filesystem.
 /lsy_drone_racing/control/rl_race/sweeps/wandb-*/
 /wandb/
+
+# Bundled recurrent-training reference guide.
+!lsy_drone_racing/control/rl_race_multi/env_wrapper/dynamic_reference.json

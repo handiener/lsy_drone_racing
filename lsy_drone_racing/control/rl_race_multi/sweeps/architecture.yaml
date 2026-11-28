@@ -1,0 +1,17 @@
+# Shared training defaults; only the selected stages and sampled parameters differ.
+name: recurrent-architecture
+program: lsy_drone_racing/control/rl_race_multi/sweep.py
+method: random
+run_cap: 12
+metric: {name: final/leaderboard_score, goal: minimize}
+command: ["${env}", pixi, run, -e, gpu, python, -m, lsy_drone_racing.control.rl_race_multi.sweep]
+parameters:
+  config_file: {value: lsy_drone_racing/control/rl_race_multi/configs/full.yaml}
+  # pretrain = Dense only; race = Dense + Sparse; multi = complete curriculum.
+  end_stage: {value: race}
+  reference_path: {values: [hermite, dynamic]}
+  seed: {values: [1, 2]}
+  hidden_size: {values: [128, 256]}
+  policy_layers: {values: [[256, 256], [512, 512], [256, 256, 256]]}
+  value_layers: {values: [[256, 256], [512, 512], [256, 256, 256]]}
+  sweep_trial_count: {value: 12}

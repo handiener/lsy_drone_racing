@@ -1,3 +1,4 @@
+# Shared Dense/Sparse/Multi recipe; select stages through train's start_stage/end_stage.
 # RTX 5090 short calibration: Solo ~18.7 GiB, heterogeneous Multi ~20.9 GiB.
 run_name: recurrent_league_s1
 seed: 1
@@ -8,6 +9,7 @@ hidden_size: 256
 policy_layers: [512, 512]
 value_layers: [512, 512]
 activation: leaky_relu
+reference_path: hermite
 n_gates: 2
 unroll_length: 32
 num_envs: 16384

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import jax.numpy as jnp
 from jax import Array
@@ -32,6 +32,14 @@ class ActionConfig:
             raise ValueError("Thrust fractions must satisfy 0 <= min < max <= 1")
         if not self.thrust_max > self.thrust_min >= 0:
             raise ValueError("Need thrust_max > thrust_min >= 0")
+
+    def with_thrust_bounds(self, low: float, high: float) -> ActionConfig:
+        """Resolve simulator thrust limits while retaining the model's mapping metadata."""
+        return replace(
+            self,
+            thrust_min=low + (high - low) * self.thrust_min_fraction,
+            thrust_max=low + (high - low) * self.thrust_max_fraction,
+        )
 
 
 def to_command(action: Array, cfg: ActionConfig) -> Array:

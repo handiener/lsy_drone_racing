@@ -13,23 +13,7 @@ from lsy_drone_racing.control.controller import Controller
 
 from .env_wrapper.actions import ActionConfig, to_command
 from .env_wrapper.observations import ObsConfig, encode
-from .network import NetworkConfig, zeros
-
-
-def network_from_metadata(metadata: dict) -> NetworkConfig:
-    if (
-        metadata.get("type") != "independent_lstm"
-        or metadata.get("observation_dim") != 57
-        or metadata.get("action_dim") != 4
-    ):
-        raise ValueError("Expected independent recurrent 57D/four-action architecture")
-    return NetworkConfig(
-        tuple(metadata["policy_layers"]),
-        tuple(metadata["value_layers"]),
-        metadata["activation"],
-        metadata["noise_scale"],
-        metadata["hidden_size"],
-    )
+from .network import network_from_metadata, zeros
 
 
 def load_policy(model_dir: Path) -> tuple:

@@ -17,9 +17,10 @@ obstacles; incompatible dimensions are rejected.
 Actor and critic have **independent LSTM(256) → MLP(512,512)** heads, LeakyReLU,
 and the original tanh-normal `[roll,pitch,yaw,thrust]` distribution. Defaults are
 80° roll/pitch, 70° yaw, seed 1. There is no MLP-to-LSTM weight conversion.
-Architecture sweeps may override these sizes, but all opponents in a pool must
-exactly match its architecture, distribution and action scaling. No padding or
-silent conversion occurs.
+Architecture sweeps may override these sizes. The learner and historical snapshots
+share an architecture; manual frozen opponents may use other LSTM sizes or the
+existing single-racer MLP, with their own normalizers and action mappings. MLP
+opponents read the original 49 ego features. There is no weight conversion.
 
 The wrapper carries each learner's actor/critic `(cell,hidden)` state across
 rollout segments. Sampling records behavior log probabilities and initial
@@ -31,6 +32,65 @@ with its un-reset critic carry; GAE stops at the reset boundary. Observation
 statistics stay fixed throughout an update and change only after all SGD epochs.
 Opponent dimensions have a unit standard-deviation floor, and absence forces
 those dimensions to zero, including after solo→multi transitions.
+
+## Independent solo training
+
+All stages use `train.py` and the same `configs/full.yaml`. The default runs
+Dense → Sparse → Multi; `end_stage=pretrain` stops after Dense and `end_stage=race`
+stops after Sparse. `start_stage` and `end_stage` select a contiguous part of the
+curriculum. Stage selection does not change network, reward, reference, budget or
+evaluation settings. This is pure simulation, with no anneal or sim-to-real adapter.
+
+```bash
+# Train/evaluate Dense + Sparse with the same settings used before Multi.
+pixi run -e gpu python -m lsy_drone_racing.control.rl_race_multi.train \
+  --config_file=lsy_drone_racing/control/rl_race_multi/configs/full.yaml \
+  --end_stage=race --run_name=lstm_solo_s1
+
+# Train only Dense and save/evaluate its checkpoint.
+pixi run -e gpu python -m lsy_drone_racing.control.rl_race_multi.train \
+  --config_file=lsy_drone_racing/control/rl_race_multi/configs/full.yaml \
+  --end_stage=pretrain --run_name=lstm_dense_s1
+
+# Train Sparse separately from a chosen Dense checkpoint (default architecture).
+pixi run -e gpu python -m lsy_drone_racing.control.rl_race_multi.train \
+  --config_file=lsy_drone_racing/control/rl_race_multi/configs/full.yaml \
+  --end_stage=race \
+  --start_stage=race --start_params=PATH/checkpoints/pretrain_final.pkl \
+  --run_name=lstm_sparse_s1
+
+# Start Multi directly from the chosen Sparse checkpoint (default architecture).
+pixi run -e gpu python -m lsy_drone_racing.control.rl_race_multi.train \
+  --config_file=lsy_drone_racing/control/rl_race_multi/configs/full.yaml \
+  --start_stage=multi \
+  --start_params=PATH_TO_SOLO_RUN/checkpoints/race_final.pkl \
+  --solo_checkpoint=PATH_TO_SOLO_RUN/checkpoints/race_final.pkl \
+  --run_name=lstm_multi_s1
+```
+
+For a custom solo network/action mapping, supply the same `hidden_size`,
+`policy_layers`, `value_layers`, activation and action limits when starting Multi.
+The checkpoint is validated before rollout.
+
+`stop_on_success=False` lets the selected final solo stage use its full budget.
+Earlier stages must still meet their thresholds before advancing.
+
+`reference_path=hermite|dynamic` selects the same guides and path-start behavior as
+`rl_race`. The shared recipe preserves the Hermite default; set `reference_path=dynamic`
+in that recipe or on the CLI to select the dynamic guide for either workflow.
+The bundled guide and [offline generator](env_wrapper/reference_generator/README.md)
+live in this package; runtime training does not import `rl_race`. The reference
+shapes Dense progress and solo path starts; it adds no dense reward to Sparse/Multi.
+
+Architecture comparisons use fresh solo runs: sweep `hidden_size`, `policy_layers`,
+`value_layers` and `activation`. When starting Sparse from a Dense checkpoint, retain
+the source architecture and action mapping; resizing loaded weights is rejected.
+[`sweeps/architecture.yaml`](sweeps/architecture.yaml) compares architectures/references
+through the existing sweep launcher and scores the selected final stage. It loads
+`configs/full.yaml` first, then applies sampled values, including values equal to
+Python defaults. Set its `end_stage` to
+`pretrain` for Dense-only experiments, or `race` for Dense → Sparse experiments.
+Neither requires a Multi run.
 
 ## Three stages
 
@@ -62,6 +122,13 @@ The default tracks are **new** `level2.toml` and `multi_new_level2.toml`, not th
 old `multi_level2.toml`. Copies are pinned into each run. Multi training uses
 50 Hz for both drones, 500 Hz physics, official starts, and optional randomized
 start-slot exchange. This does not modify the official 50/100 Hz runner.
+The TOMLs remain the source for track geometry, safety bounds, simulator dynamics,
+sensor range, disturbances and randomizations. Incompatible training clocks/control
+modes fail explicitly; they are not silently rewritten. Headless training only
+switches rendering off in the loaded config. Every run pins copies of both TOMLs.
+The existing Multi start-zone exception is preserved: ±0.13 m horizontal
+randomization and a wrapper minimum pair separation of 0.22 m (commit `71c89a4`).
+This is a deliberate historical customization, not an untouched official start rule.
 
 Training ends a world on the first crash, completion or timeout. A win requires
 actual completion before the other drone; an opponent crash alone is a draw.
@@ -102,96 +169,32 @@ options are available directly as `--name=value`; see `train --help`.
 Network/action defaults remain LSTM(256), MLP(512,512), two gates, 80° roll/pitch,
 70° yaw, seed 1. `configs/smoke.yaml` is independent and unchanged.
 
-The reference `rl_race` sweep winner `1u3vhuhn_s1` used 16,384 worlds, batch 4,096,
-32 minibatches, 4 epochs, learning rates 3e-4 / 1e-4 and dense/sparse budgets of
-2B / 12B. Its dense stage actually needed 251,658,240 transitions to switch. The
-previous 20,971,520-transition recurrent dense budget stopped without a single
-successful official-start episode. The recurrent recipe keeps the reference
-world count, gradient minibatch size, learning rates and four update epochs,
-but collects fewer sequences per iteration to fit recurrent PPO and opponents.
-The overnight recipe below reduces the reference sparse data allowance and switches at 70% to leave more wall-clock time for Multi;
-it cannot guarantee reaching the threshold before the sparse cap.
+One PPO iteration collects `batch_size × num_minibatches × unroll_length`
+learner transitions: `4096 × 4 × 32 = 524,288` with the shared recipe. It makes
+`4 × 4 = 16` optimizer updates; world count controls collection parallelism.
 
-One iteration collects `4096 × 4 × 32 = 524,288` learner transitions and makes
-`4 × 4 = 16` optimizer updates. Budgets are aligned to host epochs:
-
-| Stage | Transition budget | PPO iterations | Host epoch size |
+| Stage | Maximum transitions | PPO iterations | Success gate |
 | --- | ---: | ---: | ---: |
-| Dense | 2,013,265,920 | 3,840 | 320 iterations |
-| Sparse | 2,516,582,400 | 4,800 | 320 iterations |
-| Multi | 2,684,354,560 | 5,120 | 256 iterations |
+| Dense | 2,013,265,920 | 3,840 | 30% |
+| Sparse | 2,516,582,400 | 4,800 | 70% |
+| Multi | 2,684,354,560 | 5,120 | full budget |
 
-Increasing worlds only changes collection parallelism: worlds are NOT a factor
-in `batch_size * num_minibatches * unroll_length`. These are maxima; real success
-thresholds can switch stages earlier. The dense cap approximates the reference's
-nominal 2B allowance. The sparse cap is 20% of its actual 12,582,912,000
-transitions, explicitly trading solo learning allowance for the overnight target.
-Sparse allows `4,800 × 16 = 76,800` optimizer updates. Restoring the reference
-sparse allowance would require 24,000 iterations / 384,000 optimizer updates
-and about 7.5 hours for Sparse alone. Critic-only warmup is 80 iterations / 1,280 optimizer updates /
-41,943,040 transitions, matching the reference's 10 larger iterations.
+Solo evaluates at the initial state and every 167,772,160 transitions, with 128
+worlds. Multi periodic evaluation is off by default. Final evaluation uses 16
+episodes per opponent, seed 410000 and batch 16. These are short checks; use more
+episodes/seeds when comparing trained policies. Metrics and measured stage counts
+are saved even when a success gate stops the curriculum.
 
-Short GPU calibration on 2026-11-24 used the local RTX 5090 (32,607 MiB), the
-real simulator and full recurrent PPO backward/optimizer updates. Each isolated
-stage ran six iterations. Times below are medians of the last four iterations,
-after compilation; memory is the process peak sampled with `nvidia-smi`, including
-allocator caching, with preallocation disabled and allocator fraction `.90`.
+The 80-iteration critic-only phase is 1,280 optimizer updates / 41,943,040
+transitions. Multi snapshots occur every 256 PPO iterations / 134,217,728
+transitions; the full budget creates 20 snapshots. Budgets round to whole host
+epochs; the shared recipe is already aligned to those boundaries.
 
-| Workload | Process peak VRAM | Seconds / iteration | Training time at full stage cap |
-| --- | ---: | ---: | ---: |
-| Solo Dense | 18.69 GiB | 1.13 | 1.20 h |
-| Solo Sparse | 18.69 GiB | 1.13 | 1.51 h |
-| Multi, 41 distinct frozen actors | 20.88 GiB | 2.52 | 3.59 h |
-
-The heterogeneous pool used perturbed checkpoint copies solely to exercise
-different opponent parameters, not trained competitors. GPU utilization reached
-100% during these probes. These short runs establish a working size and estimated
-throughput, not convergence or constant utilization. Solo uses less VRAM than
-Multi; `.90` limits the allocator rather than reserving unused memory.
-The smaller 1,024-batch / 16-minibatch trial used only 11.17 GiB in Solo and took
-about 1.39 s/iteration. At batch 4,096, Multi with 8,192 worlds used 20.85 GiB
-and took about 2.51 s/iteration; doubling to 16,384 worlds was effectively tied.
-The default keeps the reference single-run world count.
-
-Full caps total about **6.3 hours of training**, leaving about 40 minutes within
-a seven-hour target for compilation, evaluation, snapshot/checkpoint writes and
-host overhead. Multi has more time than either solo stage. Stage switching can
-shorten the run, but short calibration cannot guarantee a seven-hour deadline
-or success. There is no automatic timeout or forced stage advancement.
-Raw calibration measurements are in `/tmp/rl_multi_gpu_calibration_20261124/`;
-temporary scripts and calibration checkpoints are outside the repository.
-
-For an overnight run with all defaults, open `tmux new -s multi_night` from the
-repository root, then run:
-
-```bash
-SCIPY_ARRAY_API=1 XLA_PYTHON_CLIENT_PREALLOCATE=false \
-XLA_PYTHON_CLIENT_MEM_FRACTION=.90 MUJOCO_GL=egl \
-pixi run -e gpu python -u -m lsy_drone_racing.control.rl_race_multi.train \
-  --run_name=20261124_5090_calibrated_s1
-```
-
-Detach with **Ctrl+B**, then **D**; SSH can disconnect while training continues.
-Reconnect with `tmux attach -t multi_night`. No sweep or automatic seven-hour
-cutoff is enabled. In the morning, inspect the run's `stages.json` for completed
-stages and `metrics.jsonl` for recent training/evaluation metrics. A run can still
-be training after seven hours with these budgets.
-
-Solo evaluation uses 128 worlds every 167,772,160 transitions (320 iterations),
-plus its initial evaluation. Multi intermediate evaluation remains off. Budgets
-divide epoch sizes exactly; there is no epoch-rounding overrun in this recipe.
-Solo switches require 30% / 70% success. A stage stops and saves below
-threshold when its budget is exhausted; it never advances merely to use the GPU.
-
-Terminal output is limited to short evaluation summaries and stage start/end
-messages. Per-iteration metrics are still recorded in `metrics.jsonl` and W&B,
-without dumping complete metric dictionaries to the terminal. With multi eval
-turned off, its terminal can be quiet until the stage ends.
-
-The short final check remains 16 episodes per opponent, seed 410000, batch 16.
-A fresh complete Multi stage has Solo + 20 snapshots, hence 336 final episodes.
-Increase episodes and seeds for model comparisons. Standalone evaluation defaults
-remain larger. Short calibration does not establish training success.
+Historical RTX 5090 calibration (2026-11-24) measured roughly 1.13 s/iteration and
+18.69 GiB for Solo, 2.52 s/iteration and 20.88 GiB for Multi with 41 actors sharing
+one architecture. These are throughput probes, not convergence evidence or memory
+bounds for new architectures. Raw records: `/tmp/rl_multi_gpu_calibration_20261124/`.
+No automatic wall-clock cutoff or background training is enabled.
 
 Outputs default to `rl_race_multi/outputs/RUN/`: settings, pinned tracks,
 per-stage environment/network metadata, JSONL metrics, stage status,
@@ -210,35 +213,40 @@ YAML or arguments). `start_stage=race` similarly accepts a recurrent dense
 checkpoint. Weights, normalizer and league models are restored; **Adam state,
 RNG, partial rollout, recurrent carry and local stage step counters restart**.
 This is a warm resume, not bitwise continuation. The cumulative log/checkpoint
-step counter continues from the loaded checkpoint; local stage iteration counters restart. Legacy MLP exports/checkpoints are rejected.
+step counter continues from the loaded checkpoint; local stage iteration counters restart.
+Legacy MLP weights are rejected for learner resume, but supported as frozen opponents.
 Each worker currently uses one local GPU; independent W&B agents support multiple
 machines. Default training worlds are 16,384; the short measurements above do not
 bound every long-run memory peak or state-dependent physics workload.
 
 ## League
 
-Slot zero is the frozen solo policy. With history, the default
-`solo_opponent_fraction=0.0` samples 100% historical policies, with historical
-weight `k**0.9` (oldest k=1). Without history it is 100% solo. Selection changes
-only at episode resets: an already running solo-opponent episode is not interrupted
-when the first historical snapshot arrives. Settings: `solo_opponent_fraction`,
-`sampling_exponent`, `snapshot_interval` (default 256 PPO iterations),
-`league_capacity` (default 64). One snapshot interval is 134,217,728 transitions;
-the full Multi budget creates exactly 20 periodic snapshots. Solo + 20 snapshots
-use 21 slots, leaving 43 free in a fresh run without an external pool.
-Snapshots are taken on host epoch boundaries. Multi budgets round up to whole
-snapshot intervals; actual counts are recorded. Frozen opponents default to
-mean actions (`deterministic_opponent=True`) and have independent actor carry
-and their own normalizer. Evaluation/deployment always use mean actions.
+Drop uniquely named checkpoints into [`league_pool/weights/`](league_pool/README.md),
+or select `--league_weights=OTHER_FOLDER`. Recurrent v3 `.pkl` files are self-contained;
+old single-racer MLP weights need a same-stem `.json` copied from their stage config.
+The pool folder contains inference adapters as well as weights; its MLP adapter also
+works as a standalone official-simulator controller without importing `rl_race`.
+Each opponent retains its original normalization, action limits and LSTM width.
+Solo policies receive no opponent features; Multi policies observe the learner.
 
-All models load before rollout. There is no disk or W&B access inside a JIT or
-per-environment Python controller loop. Snapshots use fixed-size JAX arrays. At capacity, only the oldest history slot
-not referenced by any live world may be replaced; slot zero is permanent. If all
-slots are occupied, the checkpoint is still archived but its pool insertion is
-skipped for that interval. `league/snapshots.jsonl` records these decisions.
-Chronological ranks keep newer checkpoints more likely even after slot reuse.
-An opponent's weights and normalizer stay fixed for its entire episode; archive
-storage grows with snapshot count, so size the interval and capacity accordingly.
+With manual weights, `fixed_opponent_fraction=0.25` reserves a uniform 25% share
+for the original solo plus manual fixed policies; 75% samples historical snapshots
+with weight `rank**sampling_exponent` (default exponent 0.9). Before history exists
+all episodes use the fixed set. With an empty manual folder, original sampling is
+preserved: `solo_opponent_fraction=0.0` means 100% history once history exists.
+
+All policies load once on the host, outside rollout/JIT. One inference bank per
+architecture retains stable array shapes; weights and normalizers remain frozen.
+`deterministic_opponent=True` uses mean actions. Opponent changes happen only on
+world reset, and each opponent has independent memory. At `league_capacity=64`,
+only the oldest inactive historical slot can be replaced; fixed/active slots stay
+protected. If no slot can be replaced, the snapshot is archived without insertion.
+`league/snapshots.jsonl` records the result.
+
+Each run stores fixed copies and a `league/manifest.json`. Resume/evaluation read
+that recorded pool; later directory changes do not silently alter old results.
+An explicit weights directory can extend a restored pool. Files added during a
+running job are not hot-loaded. See the folder README for file formats and capacity.
 
 A local manifest can also collect already evaluated policies, without W&B:
 
@@ -248,9 +256,9 @@ pixi run -e gpu python -m lsy_drone_racing.control.rl_race_multi.league \
   --output=league_pool.json --minimum_success=0.5
 ```
 
-Models must share architecture/action metadata and have actual final evaluation
+This older manifest builder requires shared architecture/action metadata and final evaluation
 reports. Inspect those results and trajectories for diversity; reward/seed/style
-names do not prove different behavior. `league_manifest` loads this fixed pool
+names do not prove different behavior. `league_manifest` loads this recorded pool
 alongside the required frozen solo checkpoint. Manifests retain checkpoint paths,
 network/reward settings and evaluation provenance; actor and normalizer are
 stored together in each checkpoint.
@@ -317,7 +325,9 @@ fail explicitly. The official runner's rules and scheduling are untouched.
 SCIPY_ARRAY_API=1 JAX_PLATFORMS=cpu MUJOCO_GL=egl pixi run -e gpu-tests pytest -q \
   tests/unit/control/test_rl_race_multi.py \
   tests/unit/control/test_rl_race_multi_sweep.py \
-  tests/integration/test_rl_race_multi.py
+  tests/unit/control/test_rl_race_multi_extensions.py \
+  tests/integration/test_rl_race_multi.py \
+  tests/integration/test_rl_race_multi_extensions.py
 ```
 
 Tests cover ego/opponent encoding, normalization transition, LSTM boundaries and

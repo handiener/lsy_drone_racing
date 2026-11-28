@@ -1,19 +1,83 @@
-"""Nominal racing path: one cubic Hermite curve per leg of the gate sequence.
+"""Reference paths: original cubic Hermite curves or an offline dynamic-model guide.
 
-Leg k ends in the center of gate ``gate_sequence[k]`` and starts in the center of the previous
+In Hermite mode, leg k ends in the center of gate ``gate_sequence[k]`` and starts in the previous
 gate in the sequence (leg 0 starts at the official takeoff position). The end tangents follow the
 gates' passing normals, so the curve crosses each gate through its opening in the required
 direction. The path is used for the start states between gates and for the arc-length progress
 reward. All functions are batched over worlds and jittable.
+The optional dynamic guide uses the same polyline projection and adapts to randomized gate poses.
 """
 
 from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any, Callable
 
 import jax.numpy as jnp
 from jax import Array
 from jax.scipy.spatial.transform import Rotation
 
 N_SEGMENTS = 32  # Polyline resolution for arc length and projection.
+
+
+def build_dynamic_polyline(track: Any) -> Callable:
+    """Load the offline dynamic guide and adapt its endpoints to randomized gates."""
+    asset = json.loads(Path(__file__).with_name("dynamic_reference.json").read_text())
+    if list(track.gate_order) != asset["gate_order"]:
+        raise ValueError("The dynamic reference is for the new Level 2 gate sequence")
+    nodes = jnp.asarray(asset["points"], dtype=jnp.float32)
+    nominal_pos = jnp.asarray(asset["gates_pos"], dtype=jnp.float32)
+    nominal_quat = jnp.asarray(asset["gates_quat"], dtype=jnp.float32)
+    nominal_start = jnp.asarray(asset["start_pos"], dtype=jnp.float32)
+    s = jnp.linspace(0.0, 1.0, N_SEGMENTS + 1)[None, :, None]
+    weight = s * s * (3.0 - 2.0 * s)
+
+    def dynamic_polyline(
+        gates_pos: Array,
+        gates_quat: Array,
+        gate_sequence: Array,
+        gate_sequence_direction: Array,
+        leg: Array,
+        start_pos: Array,
+    ) -> tuple[Array, Array]:
+        rows = jnp.arange(leg.shape[0])
+        leg = jnp.clip(leg, 0, nodes.shape[0] - 1)
+        end_ids = gate_sequence[leg]
+        prev_ids = gate_sequence[jnp.maximum(leg - 1, 0)]
+        first = (leg == 0)[:, None, None]
+        rotation0 = (
+            Rotation.from_quat(gates_quat[rows, prev_ids])
+            * Rotation.from_quat(nominal_quat[prev_ids]).inv()
+        )
+        rotation1 = (
+            Rotation.from_quat(gates_quat[rows, end_ids])
+            * Rotation.from_quat(nominal_quat[end_ids]).inv()
+        )
+        rotation0 = jnp.where(first, jnp.eye(3), rotation0.as_matrix())
+        center0 = jnp.where(first[:, 0], start_pos, gates_pos[rows, prev_ids])
+        base0 = jnp.where(first[:, 0], nominal_start, nominal_pos[prev_ids])
+        points0 = center0[:, None] + jnp.einsum(
+            "bij,bpj->bpi", rotation0, nodes[leg] - base0[:, None]
+        )
+        points1 = gates_pos[rows, end_ids, None] + jnp.einsum(
+            "bij,bpj->bpi", rotation1.as_matrix(), nodes[leg] - nominal_pos[end_ids, None]
+        )
+        points = (1.0 - weight) * points0 + weight * points1
+        lengths = jnp.linalg.norm(jnp.diff(points, axis=1), axis=-1)
+        cumulative = jnp.concatenate([jnp.zeros_like(lengths[:, :1]), jnp.cumsum(lengths, 1)], 1)
+        return points, cumulative
+
+    return dynamic_polyline
+
+
+def sample_polyline(points: Array, s: Array) -> tuple[Array, Array]:
+    """Sample a reference polyline and its tangent at normalized node parameter s."""
+    u = jnp.clip(s, 0.0, 1.0) * (points.shape[1] - 1)
+    index = jnp.minimum(u.astype(jnp.int32), points.shape[1] - 2)
+    rows = jnp.arange(points.shape[0])
+    tangent = points[rows, index + 1] - points[rows, index]
+    return points[rows, index] + (u - index)[:, None] * tangent, tangent
 
 
 def passing_normals(gates_quat: Array, gate_ids: Array, direction: Array) -> Array:
@@ -120,6 +184,7 @@ def arc_progress(
     prev_pos: Array,
     pos: Array,
     lateral_weight: float = 0.0,
+    polyline_fn: Callable | None = None,
 ) -> Array:
     """Change of the path potential arc(p) - lateral_weight * dist(p, path), shape (n,).
 
@@ -129,10 +194,15 @@ def arc_progress(
     potential difference it only rewards changes, so a constant offset (e.g. a cut corner) costs
     nothing over time.
     """
-    controls = leg_control_points(
-        gates_pos, gates_quat, gate_sequence, gate_sequence_direction, leg, start_pos
-    )
-    points, cumulative = polyline(*controls)
+    if polyline_fn is None:
+        controls = leg_control_points(
+            gates_pos, gates_quat, gate_sequence, gate_sequence_direction, leg, start_pos
+        )
+        points, cumulative = polyline(*controls)
+    else:
+        points, cumulative = polyline_fn(
+            gates_pos, gates_quat, gate_sequence, gate_sequence_direction, leg, start_pos
+        )
     arc_before, dist_before = project(points, cumulative, prev_pos)
     arc_after, dist_after = project(points, cumulative, pos)
     return (arc_after - lateral_weight * dist_after) - (arc_before - lateral_weight * dist_before)

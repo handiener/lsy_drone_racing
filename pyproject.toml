@@ -65,6 +65,7 @@ find = {}
 lsy_drone_racing = [
     "envs/assets/*.xml", "envs/assets/*.png",
     "control/rl_race/env_wrapper/dynamic_reference.json",
+    "control/rl_race_multi/env_wrapper/dynamic_reference.json",
 ]
 
 [tool.pytest.ini_options]

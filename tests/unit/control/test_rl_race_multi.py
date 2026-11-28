@@ -302,7 +302,9 @@ def test_checkpoint_league_validation_sampling_and_frozen_slots(tmp_path):
         checkpoint.save(modified, item, network=config.metadata(), env=env, stage="multi", steps=i)
         assert pool.add(item)
     packed = pool.packed()
-    for a, b in zip(jax.tree.leaves(frozen["actor"]), jax.tree.leaves(packed["actor"])):
+    for a, b in zip(
+        jax.tree.leaves(frozen["banks"][0]["actor"]), jax.tree.leaves(packed["banks"][0]["actor"])
+    ):
         np.testing.assert_array_equal(a[0], b[0])
     assert not pool.add(path)
     prob = np.asarray(probabilities(3, 3, 0.25, 0.9))
@@ -547,7 +549,10 @@ def test_pool_reuses_only_inactive_slots_and_ranks_by_recency(tmp_path):
     frozen = jax.tree.map(np.array, pool.packed())
     assert not pool.add(files[3], active_slots={0, 1, 2})
     assert pool.add(files[3], active_slots={0, 1})
-    for a, b in zip(jax.tree.leaves(frozen["actor"]), jax.tree.leaves(pool.packed()["actor"])):
+    for a, b in zip(
+        jax.tree.leaves(frozen["banks"][0]["actor"]),
+        jax.tree.leaves(pool.packed()["banks"][0]["actor"]),
+    ):
         np.testing.assert_array_equal(a[:2], b[:2])
     assert pool.add(files[4], active_slots={0, 2})
     p = np.asarray(probabilities(3, 3, 0.25, 0.9, pool.ranks()))

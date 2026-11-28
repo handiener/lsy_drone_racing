@@ -3,7 +3,6 @@
 import hashlib
 import json
 from pathlib import Path
-from typing import Any
 
 import fire
 import jax
@@ -11,7 +10,6 @@ import jax.numpy as jnp
 import numpy as np
 
 from . import checkpoint
-from .controller import network_from_metadata
 from .env_wrapper.actions import ActionConfig
 from .env_wrapper.env import EnvConfig, RaceEnv
 from .env_wrapper.multi import MultiRaceEnv
@@ -19,7 +17,8 @@ from .env_wrapper.observations import ObsConfig
 from .env_wrapper.rewards import RewardConfig
 from .env_wrapper.starts import StartConfig
 from .league import League
-from .network import make_inference_fn, reset_carry
+from .network import make_inference_fn, network_from_metadata
+from .recurrent import episode_batch
 
 
 def ranking_score(
@@ -36,40 +35,12 @@ def config_from_record(record: dict) -> EnvConfig:
     return EnvConfig(
         max_episode_steps=record["max_episode_steps"],
         hidden_size=record["hidden_size"],
+        reference_path=record.get("reference_path", "hermite"),
         action=ActionConfig(**record["action"]),
         obs=ObsConfig(**record["obs"]),
         reward=RewardConfig(**record["reward"]),
         start=StartConfig(official_prob=1.0),
     )
-
-
-def episode_batch(env: Any, policy: Any, params: Any, key: Any, count: int, length: int) -> dict:
-    state = env.reset(jax.random.split(key, count))
-    totals = {k: jnp.zeros(count) for k in state.metrics}
-    totals["reward"] = jnp.zeros(count)
-    totals["duration"] = jnp.zeros(count)
-
-    def step(carry, _):
-        state, seen, totals, key = carry
-        key, subkey = jax.random.split(key)
-        hidden, action, _ = policy(state.obs, state.info["recurrent"], subkey)
-        next_state = env.step(state, action)
-        next_state = next_state.replace(
-            info=dict(
-                next_state.info,
-                recurrent=reset_carry(
-                    hidden, next_state.info.get("learner_reset", next_state.done) > 0
-                ),
-            )
-        )
-        metrics = dict(next_state.metrics, reward=next_state.reward, duration=jnp.ones(count) / 50)
-        totals = {k: totals[k] + jnp.where(~seen, metrics[k], 0.0) for k in totals}
-        return (next_state, seen | (next_state.done > 0), totals, key), None
-
-    (_, seen, totals, _), _ = jax.lax.scan(
-        step, (state, jnp.zeros(count, bool), totals, key), None, length=length
-    )
-    return dict(totals, seen=seen)
 
 
 def evaluate(
@@ -114,6 +85,7 @@ def evaluate(
             model["league"]["solo_fraction"],
             model["league"]["exponent"],
             str(manifest),
+            fixed_fraction=model["league"].get("fixed_fraction", 0.25),
         )
     opponents = list(range(len(pool.entries))) if pool else [None]
     for opponent in opponents:
@@ -148,6 +120,11 @@ def evaluate(
                                 seed=int(seed),
                                 episode=offset + i,
                                 opponent=opponent,
+                                opponent_fixed=bool(
+                                    pool.entries[opponent].get("fixed", opponent == 0)
+                                )
+                                if pool
+                                else True,
                                 opponent_solo=bool(pool.entries[opponent]["solo"])
                                 if pool
                                 else True,
@@ -185,8 +162,18 @@ def evaluate(
     if pool:
         for key in ["win", "loss", "draw", "collision"]:
             report[f"{key}_rate"] = float(np.mean([r[key] for r in rows]))
-        for solo, label in [(True, "frozen_solo"), (False, "historical")]:
-            group = [r for r in rows if (r["opponent"] == 0) == solo]
+        for label in ["frozen_solo", "fixed", "historical"]:
+            group = [
+                r
+                for r in rows
+                if (
+                    r["opponent"] == 0
+                    if label == "frozen_solo"
+                    else r["opponent_fixed"]
+                    if label == "fixed"
+                    else not r["opponent_fixed"]
+                )
+            ]
             report[f"win_rate_vs_{label}"] = (
                 float(np.mean([r["win"] for r in group])) if group else None
             )

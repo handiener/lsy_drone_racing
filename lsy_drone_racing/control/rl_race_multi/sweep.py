@@ -36,6 +36,15 @@ def run_trial() -> None:
             if "roll_limit_deg" in args or "pitch_limit_deg" in args:
                 raise ValueError("Use tilt_limit_deg or separate roll/pitch limits, not both")
             args.update(roll_limit_deg=tilt, pitch_limit_deg=tilt)
+        config_file = args.pop("config_file", None)
+        if config_file:
+            import yaml
+
+            configured = yaml.safe_load(Path(config_file).expanduser().read_text())
+            if not isinstance(configured, dict) or "config_file" in configured:
+                raise ValueError("config_file must contain training arguments without nested files")
+            # Merge explicit trial values before train sees them, including Python defaults.
+            args = {**configured, **args}
         upload_checkpoint = args.pop("upload_checkpoint", True)
         trial_count = int(args.pop("sweep_trial_count", 1))
         cloud_budget = float(args.pop("cloud_checkpoint_budget_gb", 50))
@@ -60,20 +69,24 @@ def run_trial() -> None:
             seed=args.get("seed", 0),
             machine=os.environ.get("RL_RACE_MACHINE", "unlabelled"),
             config=args,
+            config_file=config_file,
             output_dir=str(output),
         )
         (output / "trial_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
         report_file = output / "final_evaluation.json"
         if not report_file.exists():
             run.summary["training_complete"] = False
-            raise RuntimeError("Pretraining did not reach race; no final race evaluation")
+            raise RuntimeError("Training produced no final stage evaluation")
         report = json.loads(report_file.read_text())
+        target_stage = json.loads((output / "settings.json").read_text()).get(
+            "end_stage", args.get("end_stage", "multi")
+        )
         run.log({f"final/{k}": v for k, v in report.items() if isinstance(v, (int, float))})
         run.summary.update(
             {
                 "output_dir": str(output),
                 "checkpoint": report["checkpoint"],
-                "training_complete": report["stage"] == "multi",
+                "training_complete": report["stage"] == target_stage,
                 "completed_stage": report["stage"],
             }
         )

@@ -57,10 +57,27 @@ class EnvConfig:
 
     max_episode_steps: int = 1250
     hidden_size: int = 256
+    reference_path: str = "hermite"
     action: ActionConfig = field(default_factory=ActionConfig)
     obs: ObsConfig = field(default_factory=ObsConfig)
     reward: rewards.RewardConfig = field(default_factory=rewards.RewardConfig)
     start: StartConfig = field(default_factory=StartConfig)
+
+
+def load_track(config_path: str | Path, drones: int) -> Any:
+    """Read the TOML without silently changing the trained clock or control interface."""
+    from lsy_drone_racing.utils import load_config
+
+    config = load_config(config_path)
+    agents = config.env.kwargs if drones == 2 else [config.env]
+    if len(config.env.track.drones) != drones or len(agents) != drones:
+        raise ValueError(f"Training track requires exactly {drones} drone(s)")
+    if any(a["freq"] != 50 or a["control_mode"] != "attitude" for a in agents):
+        raise ValueError("Recurrent training requires 50 Hz attitude control in the TOML")
+    if any(a["sensor_range"] != agents[0]["sensor_range"] for a in agents):
+        raise ValueError("Both training drones must use the same TOML sensor_range")
+    config.sim.render = False
+    return config
 
 
 class RaceEnv(Env):
@@ -76,13 +93,13 @@ class RaceEnv(Env):
     ) -> None:
         """Build the course simulator for ``n_envs`` parallel worlds."""
         from lsy_drone_racing.envs.drone_race import VecDroneRaceEnv
-        from lsy_drone_racing.utils import load_config
 
         self.cfg = cfg or EnvConfig()
+        if self.cfg.reference_path not in {"hermite", "dynamic"}:
+            raise ValueError("reference_path must be hermite or dynamic")
         self.n_envs = int(n_envs)
         self.config_path = Path(config_path or DEFAULT_CONFIG).expanduser().resolve()
-        config = load_config(self.config_path)
-        config.sim.render = False
+        config = load_track(self.config_path, 1)
         self.freq = int(config.env.freq)
         core = VecDroneRaceEnv(
             num_envs=self.n_envs,
@@ -90,7 +107,7 @@ class RaceEnv(Env):
             sim_config=config.sim,
             track=config.env.track,
             sensor_range=config.env.sensor_range,
-            control_mode="attitude",
+            control_mode=config.env.control_mode,
             disturbances=config.env.get("disturbances"),
             randomizations=config.env.get("randomizations"),
             seed=seed,
@@ -103,17 +120,18 @@ class RaceEnv(Env):
         self._core = core
         self._template = core.data
         low, high = core.single_action_space.low, core.single_action_space.high
-        action_cfg = self.cfg.action
-        self.action_cfg = ActionConfig(
-            roll_limit_deg=action_cfg.roll_limit_deg,
-            pitch_limit_deg=action_cfg.pitch_limit_deg,
-            yaw_limit_deg=action_cfg.yaw_limit_deg,
-            thrust_min=float(low[3] + (high[3] - low[3]) * action_cfg.thrust_min_fraction),
-            thrust_max=float(low[3] + (high[3] - low[3]) * action_cfg.thrust_max_fraction),
-        )
+        self.action_cfg = self.cfg.action.with_thrust_bounds(float(low[3]), float(high[3]))
         self.start_pos = jnp.asarray(np.asarray(config.env.track.drones[0]["pos"], np.float32))
+        self._reference_polyline = (
+            path.build_dynamic_polyline(config.env.track)
+            if self.cfg.reference_path == "dynamic"
+            else None
+        )
         self._path_start = build_path_start(
-            self.cfg.start, core.build_contact_check_fn(), self.start_pos
+            self.cfg.start,
+            core.build_contact_check_fn(),
+            self.start_pos,
+            polyline_fn=self._reference_polyline,
         )
         self.n_seq = int(core.data.gate_sequence.shape[0])
 
@@ -200,6 +218,7 @@ class RaceEnv(Env):
             prev["pos"],
             raw["pos"],
             lateral_weight=self.cfg.reward.path_lateral,
+            polyline_fn=self._reference_polyline,
         )
         official = state.info["official"]
         seconds = data.steps.astype(jnp.float32) / self.freq

@@ -4,7 +4,7 @@ import inspect
 import json
 import sys
 import time
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -65,8 +65,13 @@ def train(
     reset_critic: bool = True,
     start_params: str | None = None,
     start_stage: str = "pretrain",
+    end_stage: str = "multi",
+    stop_on_success: bool = True,
+    reference_path: str = "hermite",
     solo_checkpoint: str | None = None,
     league_manifest: str | None = None,
+    league_weights: str | None = None,
+    fixed_opponent_fraction: float = 0.25,
     solo_config: str | None = None,
     multi_config: str | None = None,
     pretrain_crash: float = 20.0,
@@ -118,7 +123,7 @@ def train(
     wandb_entity: str | None = None,
     wandb_group: str | None = None,
 ) -> str:
-    """Train all three stages; early failure is recorded and never silently advanced.
+    """Train the selected curriculum stages; unmet success gates never silently advance.
 
     Resume restores model/normalizer, not Adam, RNG or recurrent rollout state.
     Solo stages always evaluate; intermediate_eval controls only league evaluation.
@@ -139,8 +144,15 @@ def train(
             if k != "config_file" and v != signature.parameters[k].default
         }
         return train(**{**configured, **overrides})
-    if start_stage not in {"pretrain", "race", "multi"}:
-        raise ValueError("Invalid start_stage")
+    order = ["pretrain", "race", "multi"]
+    if start_stage not in order or end_stage not in order:
+        raise ValueError("Invalid start_stage/end_stage")
+    if order.index(start_stage) > order.index(end_stage):
+        raise ValueError("start_stage must not follow end_stage")
+    if reference_path not in {"hermite", "dynamic"}:
+        raise ValueError("reference_path must be hermite or dynamic")
+    if not 0 <= fixed_opponent_fraction <= 1:
+        raise ValueError("fixed_opponent_fraction must be in [0, 1]")
     if start_stage != "pretrain" and not start_params:
         raise ValueError("Stage resume requires start_params")
     if start_stage == "multi" and not solo_checkpoint:
@@ -235,7 +247,7 @@ def train(
     ):
         checkpoint.write_json(run / "resume_league.json", loaded["league"])
         league_manifest = str(run / "resume_league.json")
-    stages = ["pretrain", "race", "multi"][["pretrain", "race", "multi"].index(start_stage) :]
+    stages = order[order.index(start_stage) : order.index(end_stage) + 1]
     stage_log = []
     offset = int(loaded["steps"]) if loaded else 0
     settings["resume_from_steps"] = offset
@@ -266,6 +278,7 @@ def train(
             cfg = EnvConfig(
                 max_episode_steps=max_episode_steps,
                 hidden_size=hidden_size,
+                reference_path=reference_path,
                 action=ActionConfig(
                     roll_limit_deg,
                     pitch_limit_deg,
@@ -277,14 +290,7 @@ def train(
                 reward=reward,
                 start=StartConfig(official_prob=1.0 if stage == "multi" else official_start_prob),
             )
-            eval_cfg = EnvConfig(
-                max_episode_steps=max_episode_steps,
-                hidden_size=hidden_size,
-                action=cfg.action,
-                obs=cfg.obs,
-                reward=reward,
-                start=StartConfig(official_prob=1.0),
-            )
+            eval_cfg = replace(cfg, start=StartConfig(official_prob=1.0))
             if stage == "multi":
                 solo = checkpoint.load(solo_checkpoint, network.metadata())
                 pool = League(
@@ -296,6 +302,8 @@ def train(
                     solo_opponent_fraction,
                     sampling_exponent,
                     league_manifest,
+                    weights_dir=league_weights,
+                    fixed_fraction=fixed_opponent_fraction,
                 )
                 env = MultiRaceEnv(
                     num_envs,
@@ -346,26 +354,35 @@ def train(
                     ),
                 )
                 latest = {}
+                actor_lr = learning_rate if dense and params is None else policy_lr_after_switch
                 schedules = lr_schedules(
-                    learning_rate if dense else policy_lr_after_switch,
+                    actor_lr,
                     learning_rate,
                     freeze_policy_steps=0 if params is None else critic_only_iterations * updates,
                 )
 
-                def keep(step: int, _make: Any, current: Any) -> None:
-                    latest.update(params=current, step=step)
+                def save_checkpoint(label: str, current: Any, step: int) -> Path:
+                    path = run / "checkpoints" / f"{stage}_{label}.pkl"
                     checkpoint.save(
                         current,
-                        run / "checkpoints" / f"{stage}_latest.pkl",
+                        path,
                         network=network.metadata(),
                         env=env_record,
                         stage=stage,
                         steps=offset + step,
                         league=pool.metadata() if pool else None,
                         metadata=dict(
-                            seed=seed, run_id=run_name, evaluation=latest.get("evaluation")
+                            seed=seed,
+                            run_id=run_name,
+                            evaluation=latest.get("evaluation"),
+                            settings=settings,
                         ),
                     )
+                    return path
+
+                def keep(step: int, _make: Any, current: Any) -> None:
+                    latest.update(params=current, step=step)
+                    save_checkpoint("latest", current, step)
 
                 def progress(step: int, metrics: dict) -> None:
                     values = {k: float(v) for k, v in metrics.items() if np.ndim(v) == 0}
@@ -374,7 +391,7 @@ def train(
                         latest["evaluation"] = dict(values)
                     opt_step = (step // transitions) * updates
                     values.update(
-                        stage=float(["pretrain", "race", "multi"].index(stage)),
+                        stage=float(order.index(stage)),
                         lr_policy=float(schedules[0](opt_step)),
                         lr_value=float(schedules[1](opt_step)),
                     )
@@ -402,6 +419,7 @@ def train(
                     threshold = switch_success if dense else sparse_switch_success
                     if (
                         stage != "multi"
+                        and (stage != end_stage or stop_on_success)
                         and step > 0
                         and values.get("eval/success_rate", -1) >= threshold
                     ):
@@ -420,7 +438,7 @@ def train(
                 if params is not None:
                     kwargs.update(restore_params=params, restore_value_fn=not reset_critic)
                     kwargs["optimizer_override"] = separate_lr(
-                        policy_lr_after_switch,
+                        actor_lr,
                         learning_rate,
                         max_grad_norm=max_grad_norm,
                         freeze_policy_steps=critic_only_iterations * updates,
@@ -463,17 +481,7 @@ def train(
                     switched = True
                     params = latest["params"]
                 end = latest["step"]
-                path = run / "checkpoints" / f"{stage}_final.pkl"
-                checkpoint.save(
-                    params,
-                    path,
-                    network=network.metadata(),
-                    env=env_record,
-                    stage=stage,
-                    steps=offset + end,
-                    league=pool.metadata() if pool else None,
-                    metadata=dict(seed=seed, run_id=run_name, evaluation=latest.get("evaluation")),
-                )
+                path = save_checkpoint("final", params, end)
                 stage_log.append(
                     dict(
                         stage=stage,
@@ -484,7 +492,7 @@ def train(
                         if switched
                         else (
                             "budget_complete"
-                            if stage == "multi"
+                            if stage == "multi" or (stage == end_stage and not stop_on_success)
                             else "success_threshold_not_reached"
                         ),
                     )
@@ -521,7 +529,7 @@ def train(
                 )
                 wandb_run.summary.update(
                     dict(
-                        stage_complete=stage_log[-1]["stage"] == "multi",
+                        stage_complete=stage_log[-1]["stage"] == end_stage,
                         failure_reason=stage_log[-1]["reason"],
                     )
                 )

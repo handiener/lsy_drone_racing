@@ -4,11 +4,8 @@ method: grid
 metric: {name: final/leaderboard_score, goal: minimize}
 command: ["${env}", pixi, run, -e, gpu, python, -m, lsy_drone_racing.control.rl_race_multi.sweep]
 parameters:
+  config_file: {value: lsy_drone_racing/control/rl_race_multi/configs/full.yaml}
   seed: {value: 1}
-  hidden_size: {value: 256}
-  policy_layers: {value: [512, 512]}
-  value_layers: {value: [512, 512]}
-  unroll_length: {value: 32}
   experiment:
     values:
       - {name: balanced, learning_rate: 0.0003, entropy_cost: 0.005, num_updates_per_batch: 4, switch_success: 0.3, sparse_switch_success: 0.9, eval_every_steps: 80000000}
